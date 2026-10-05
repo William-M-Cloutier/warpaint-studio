@@ -240,7 +240,7 @@ assert.equal(maskAt(across.mask, shadeW, 40, 74), 255, 'the lit end of the same 
 assert.equal(maskAt(across.mask, shadeW, 120, 74), 0, 'a crease stops the fill before the next plate')
 assert.equal(maskAt(across.mask, shadeW, 2, 2), 0, 'shade-aware wand stays off the backdrop')
 
-const rawShade = floodMask(shaded, shadeW, shadeH, 24, 12, 32, { ignoreLighting: false })
+const rawShade = floodMask(shaded, shadeW, shadeH, 24, 12, 32, { edgeAware: false })
 assert.ok(rawShade)
 assert.equal(maskAt(rawShade.mask, shadeW, 40, 74), 0, 'raw color match still stops on a shade ramp')
 

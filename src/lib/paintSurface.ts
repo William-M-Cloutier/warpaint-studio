@@ -37,7 +37,7 @@ export type SurfaceConfig = {
   space: boolean
   tolerance: number
   maskMode: MaskMode
-  ignoreLighting: boolean
+  edgeAware: boolean
 }
 
 type SurfaceEvents = {
@@ -194,7 +194,7 @@ export class PaintSurface {
   private space = false
   private tolerance = 48
   private maskMode: MaskMode = 'new'
-  private ignoreLighting = true
+  private edgeAware = true
   private readonly sections = new SectionLayer()
   private overlayCtx: CanvasRenderingContext2D | null = null
   /** Alpha of the cutout sample. Replaced, never mutated, so old strokes keep their clip. */
@@ -245,7 +245,7 @@ export class PaintSurface {
     this.space = config.space
     this.tolerance = config.tolerance
     this.maskMode = config.maskMode
-    this.ignoreLighting = config.ignoreLighting
+    this.edgeAware = config.edgeAware
     if (this.ring && !showsBrushRing(config.tool, config.space)) {
       this.ring.style.visibility = 'hidden'
     }
@@ -586,7 +586,7 @@ export class PaintSurface {
     if (!this.image || !this.sampleCtx || this.disposed) return 0
     const pixels = this.readSample()
     if (!pixels) return 0
-    const count = this.sections.propose(pixels.data, this.ignoreLighting)
+    const count = this.sections.propose(pixels.data, this.edgeAware)
     if (count > 0) this.noteSectionEdit()
     else {
       this.refreshOverlay(null, null)
@@ -1100,7 +1100,7 @@ export class PaintSurface {
         point.y,
         this.tolerance,
         this.maskMode,
-        this.ignoreLighting,
+        this.edgeAware,
       )
       if (!result.ok) {
         this.emit.error(result.reason)
@@ -1141,7 +1141,8 @@ export class PaintSurface {
       cancelAnimationFrame(this.raf)
       this.raf = 0
     }
-    const result = this.sections.lasso(session.points, session.maskMode)
+    const pixels = this.readSample()
+    const result = this.sections.lasso(session.points, session.maskMode, pixels?.data)
     this.session = null
     this.viewport.classList.remove('is-panning')
     if (!result.ok) {
@@ -1202,7 +1203,11 @@ export class PaintSurface {
     workCtx.restore()
     const pixels = workCtx.getImageData(0, 0, box.w, box.h).data
     const alpha = new Uint8Array(box.w * box.h)
-    for (let i = 0; i < alpha.length; i += 1) alpha[i] = pixels[i * 4 + 3]
+    const sample = this.sampleCtx?.getImageData(box.x, box.y, box.w, box.h)
+    for (let i = 0; i < alpha.length; i += 1) {
+      if (sample && sample.data[i * 4 + 3] < 16) continue
+      alpha[i] = pixels[i * 4 + 3]
+    }
     return { alpha, x: box.x, y: box.y, w: box.w, h: box.h }
   }
 

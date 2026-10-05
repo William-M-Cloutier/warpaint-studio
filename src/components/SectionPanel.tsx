@@ -9,12 +9,12 @@ type SectionPanelProps = {
   activeId: string | null
   maskMode: MaskMode
   tolerance: number
-  ignoreLighting: boolean
+  edgeAware: boolean
   proposeBusy: boolean
   onTool: (tool: Tool) => void
   onMaskMode: (mode: MaskMode) => void
   onTolerance: (value: number) => void
-  onIgnoreLighting: (value: boolean) => void
+  onEdgeAware: (value: boolean) => void
   onSelect: (id: string | null) => void
   onRename: (id: string, name: string) => void
   onCategory: (id: string, category: SectionCategory, customLabel: string) => void
@@ -43,12 +43,12 @@ export function SectionPanel({
   activeId,
   maskMode,
   tolerance,
-  ignoreLighting,
+  edgeAware,
   proposeBusy,
   onTool,
   onMaskMode,
   onTolerance,
-  onIgnoreLighting,
+  onEdgeAware,
   onSelect,
   onRename,
   onCategory,
@@ -119,16 +119,16 @@ export function SectionPanel({
       <label className="lighting-toggle">
         <input
           type="checkbox"
-          checked={ignoreLighting}
-          aria-label="Ignore lighting"
+          checked={edgeAware}
+          aria-label="Edge-aware"
           disabled={!hasImage}
-          onChange={(event) => onIgnoreLighting(event.target.checked)}
+          onChange={(event) => onEdgeAware(event.target.checked)}
         />
-        Ignore lighting
+        Edge-aware
       </label>
       <p className="tool-note">
-        Wand, lasso, or mask. New starts a section. Add and Subtract edit the active one. Ignore lighting
-        follows one material through shade and stops at a crease.
+        Wand, lasso, or mask stay on the miniature. Edge-aware grows across shade and stops at a sculpted
+        edge, such as a plate seam or a shield outline.
       </p>
       <button
         type="button"

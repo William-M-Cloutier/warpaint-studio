@@ -162,10 +162,10 @@ export class SectionLayer {
     y: number,
     tolerance: number,
     mode: MaskMode,
-    ignoreLighting = true,
+    edgeAware = true,
   ): SectionResult {
     this.cancelPreview()
-    const flooded = floodMask(rgba, this.width, this.height, x, y, tolerance, { ignoreLighting })
+    const flooded = floodMask(rgba, this.width, this.height, x, y, tolerance, { edgeAware })
     if (!flooded) return { ok: false, reason: 'That spot is empty. Click the miniature.' }
     if (flooded.count < MIN_WAND_PIXELS) {
       return { ok: false, reason: 'Nothing selected. Raise tolerance or click a broader area.' }
@@ -173,17 +173,26 @@ export class SectionLayer {
     return this.applyFull(flooded.mask, mode)
   }
 
-  lasso(points: readonly MaskPoint[], mode: MaskMode): SectionResult {
+  lasso(points: readonly MaskPoint[], mode: MaskMode, rgba?: Uint8ClampedArray): SectionResult {
     this.cancelPreview()
     if (points.length < 3) return { ok: false, reason: 'Draw a loop around the region.' }
     const filled = fillPolygon(this.width, this.height, points)
+    if (rgba && rgba.length >= filled.mask.length * 4) {
+      let count = 0
+      for (let i = 0; i < filled.mask.length; i += 1) {
+        if (filled.mask[i] === 0) continue
+        if (rgba[i * 4 + 3] < 16) filled.mask[i] = 0
+        else count += 1
+      }
+      filled.count = count
+    }
     if (filled.count < MIN_WAND_PIXELS) return { ok: false, reason: 'That loop is too small to make a section.' }
     return this.applyFull(filled.mask, mode)
   }
 
-  propose(rgba: Uint8ClampedArray, ignoreLighting = true): number {
+  propose(rgba: Uint8ClampedArray, edgeAware = true): number {
     this.cancelPreview()
-    const masks = proposeSectionMasks(rgba, this.width, this.height, { ignoreLighting })
+    const masks = proposeSectionMasks(rgba, this.width, this.height, { edgeAware })
     if (masks.length < 2) return 0
     const activeBefore = this.activeId
     const index = this.sections.length
