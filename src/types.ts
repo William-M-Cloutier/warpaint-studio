@@ -1,4 +1,4 @@
-export type Tool = 'brush' | 'eraser' | 'eyedropper' | 'pan'
+export type Tool = 'brush' | 'eraser' | 'eyedropper' | 'pan' | 'restore' | 'eraseBackdrop'
 
 export type ThemeName = 'dark' | 'light'
 

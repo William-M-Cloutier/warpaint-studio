@@ -493,3 +493,271 @@ export function projectCutout(full: RgbaBuffer, coarse: RgbaBuffer, strength: nu
   writeAlpha(data, remove)
   return { removedRatio: ratio }
 }
+
+const N4 = [
+  [-1, 0],
+  [1, 0],
+  [0, -1],
+  [0, 1],
+] as const
+
+const N8 = [
+  [-1, -1],
+  [0, -1],
+  [1, -1],
+  [-1, 0],
+  [1, 0],
+  [-1, 1],
+  [0, 1],
+  [1, 1],
+] as const
+
+/** Near-white rim, about 13 levels on a grey ramp. Grey plastic is farther than this. */
+const FRINGE_TRIM = 18
+/** A transparent island closer than this to the backdrop is a white pocket, not a hole. */
+const HOLE_FIGURE_DIST = 26
+
+function holePixelLimit(width: number, height: number): number {
+  const scaled = Math.round(width * height * 0.004)
+  return Math.max(64, Math.min(24000, scaled))
+}
+
+function backdropRefsIgnoringAlpha(buffer: RgbaBuffer): RGB[] {
+  const { data, width, height } = buffer
+  const buckets = 4
+  const samples: RGB[] = []
+  const add = (x0: number, x1: number, y0: number, y1: number) => {
+    if (x1 <= x0 || y1 <= y0) return
+    let r = 0
+    let g = 0
+    let b = 0
+    let n = 0
+    for (let y = y0; y < y1; y += 1) {
+      for (let x = x0; x < x1; x += 1) {
+        const i = (y * width + x) * 4
+        r += data[i]
+        g += data[i + 1]
+        b += data[i + 2]
+        n += 1
+      }
+    }
+    if (n === 0) return
+    samples.push({ r: r / n, g: g / n, b: b / n, luma: lumaOf(r / n, g / n, b / n) })
+  }
+  for (let bucket = 0; bucket < buckets; bucket += 1) {
+    const x0 = Math.floor((bucket * width) / buckets)
+    const x1 = Math.floor(((bucket + 1) * width) / buckets)
+    add(x0, x1, 0, 1)
+    if (height > 1) add(x0, x1, height - 1, height)
+    const y0 = Math.floor((bucket * height) / buckets)
+    const y1 = Math.floor(((bucket + 1) * height) / buckets)
+    add(0, 1, y0, y1)
+    if (width > 1) add(width - 1, width, y0, y1)
+  }
+  if (samples.length === 0) return [{ r: 255, g: 255, b: 255, luma: 255 }]
+  const lumas = samples.map((sample) => sample.luma).sort((a, b) => a - b)
+  const median = lumas[lumas.length >> 1]
+  const kept = samples.filter((sample) => Math.abs(sample.luma - median) <= LUMA_WINDOW)
+  return kept.length > 0 ? kept : samples
+}
+
+/**
+ * Patch a cutout in place. Fills small transparent islands of figure color,
+ * strips the near-white rim, and softens the matte by one or two pixels.
+ * Transparent regions that touch the outside of the picture stay clear, as do
+ * enclosed pockets that still match the backdrop.
+ * Pass `source` when the cutout buffer no longer holds the original RGB.
+ */
+export function repairCutout(buffer: RgbaBuffer, source?: RgbaBuffer): void {
+  const { data, width, height } = buffer
+  const count = width * height
+  if (count === 0) return
+  const src = source && source.width === width && source.height === height ? source.data : data
+  const refs = backdropRefsIgnoringAlpha(source ?? buffer)
+  const distAt = (index: number) => {
+    const offset = index * 4
+    return nearestBackdrop(src[offset], src[offset + 1], src[offset + 2], refs).dist
+  }
+
+  const outside = new Uint8Array(count)
+  const queue = new Int32Array(count)
+  let head = 0
+  let tail = 0
+  const seedOutside = (index: number) => {
+    if (outside[index] || data[index * 4 + 3] >= 16) return
+    outside[index] = 1
+    queue[tail] = index
+    tail += 1
+  }
+  for (let x = 0; x < width; x += 1) {
+    seedOutside(x)
+    if (height > 1) seedOutside((height - 1) * width + x)
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    seedOutside(y * width)
+    if (width > 1) seedOutside(y * width + width - 1)
+  }
+  while (head < tail) {
+    const index = queue[head]
+    head += 1
+    const x = index % width
+    const y = (index - x) / width
+    for (const [dx, dy] of N8) {
+      const nx = x + dx
+      const ny = y + dy
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
+      seedOutside(ny * width + nx)
+    }
+  }
+
+  const limit = holePixelLimit(width, height)
+  const seen = new Uint8Array(count)
+  const members = new Int32Array(Math.min(count, limit))
+  const distances = new Float64Array(Math.min(count, limit))
+  for (let index = 0; index < count; index += 1) {
+    if (seen[index] || outside[index] || data[index * 4 + 3] >= 16) continue
+    let memberCount = 0
+    let overflow = false
+    head = 0
+    tail = 0
+    seen[index] = 1
+    queue[tail] = index
+    tail += 1
+    while (head < tail) {
+      const current = queue[head]
+      head += 1
+      if (memberCount < limit) {
+        members[memberCount] = current
+        distances[memberCount] = distAt(current)
+        memberCount += 1
+      } else {
+        overflow = true
+      }
+      const x = current % width
+      const y = (current - x) / width
+      for (const [dx, dy] of N4) {
+        const nx = x + dx
+        const ny = y + dy
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
+        const next = ny * width + nx
+        if (seen[next] || outside[next] || data[next * 4 + 3] >= 16) continue
+        seen[next] = 1
+        queue[tail] = next
+        tail += 1
+      }
+    }
+    if (overflow || memberCount < 1) continue
+    distances.subarray(0, memberCount).sort()
+    const median = distances[memberCount >> 1]
+    if (median <= HOLE_FIGURE_DIST) continue
+    for (let k = 0; k < memberCount; k += 1) {
+      const offset = members[k] * 4
+      data[offset] = src[offset]
+      data[offset + 1] = src[offset + 1]
+      data[offset + 2] = src[offset + 2]
+      data[offset + 3] = src[offset + 3] >= 16 ? src[offset + 3] : 255
+    }
+  }
+
+  const clearFringe = () => {
+    const drop = new Uint8Array(count)
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = y * width + x
+        if (data[index * 4 + 3] < 16) continue
+        let open = false
+        for (const [dx, dy] of N4) {
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height || data[(ny * width + nx) * 4 + 3] < 16) {
+            open = true
+            break
+          }
+        }
+        if (!open || distAt(index) > FRINGE_TRIM) continue
+        drop[index] = 1
+      }
+    }
+    for (let index = 0; index < count; index += 1) {
+      if (drop[index]) data[index * 4 + 3] = 0
+    }
+  }
+  clearFringe()
+  clearFringe()
+  clearFringe()
+
+  const speckSeen = new Uint8Array(count)
+  const speckMembers = new Int32Array(48)
+  for (let index = 0; index < count; index += 1) {
+    if (speckSeen[index] || data[index * 4 + 3] < 16 || distAt(index) > FRINGE_TRIM) continue
+    let memberCount = 0
+    let touchesOpen = false
+    let overflow = false
+    head = 0
+    tail = 0
+    speckSeen[index] = 1
+    queue[tail] = index
+    tail += 1
+    while (head < tail) {
+      const current = queue[head]
+      head += 1
+      if (memberCount < 48) speckMembers[memberCount] = current
+      else overflow = true
+      memberCount += 1
+      const x = current % width
+      const y = (current - x) / width
+      for (const [dx, dy] of N4) {
+        const nx = x + dx
+        const ny = y + dy
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height || data[(ny * width + nx) * 4 + 3] < 16) {
+          touchesOpen = true
+          continue
+        }
+        const next = ny * width + nx
+        if (speckSeen[next] || distAt(next) > FRINGE_TRIM) continue
+        speckSeen[next] = 1
+        queue[tail] = next
+        tail += 1
+      }
+    }
+    if (!touchesOpen || overflow) continue
+    for (let k = 0; k < memberCount; k += 1) data[speckMembers[k] * 4 + 3] = 0
+  }
+
+  const alpha = new Uint8Array(count)
+  for (let index = 0; index < count; index += 1) alpha[index] = data[index * 4 + 3]
+  const softened = new Uint8Array(alpha)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x
+      if (alpha[index] < 16) continue
+      for (const [dx, dy] of N4) {
+        const nx = x + dx
+        const ny = y + dy
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height || alpha[ny * width + nx] < 16) {
+          softened[index] = Math.min(alpha[index], 186)
+          break
+        }
+      }
+    }
+  }
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x
+      if (softened[index] < 200) continue
+      for (const [dx, dy] of N4) {
+        const nx = x + dx
+        const ny = y + dy
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
+        const neighbor = softened[ny * width + nx]
+        if (neighbor > 16 && neighbor < 200) {
+          data[index * 4 + 3] = Math.min(softened[index], 226)
+          break
+        }
+      }
+    }
+  }
+  for (let index = 0; index < count; index += 1) {
+    if (softened[index] >= 16 && softened[index] < 200) data[index * 4 + 3] = softened[index]
+  }
+}

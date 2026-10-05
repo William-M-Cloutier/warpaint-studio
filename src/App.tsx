@@ -235,6 +235,8 @@ export function App() {
       else if (key === 'e' || key === '2') setTool('eraser')
       else if (key === 'i' || key === '3') setTool('eyedropper')
       else if (key === 'h' || key === '4') setTool('pan')
+      else if (key === 'r') setTool('restore')
+      else if (key === 'x') setTool('eraseBackdrop')
       else if (event.key === '[') setBrushSize((size) => clampSize(size - (event.shiftKey ? 10 : 2)))
       else if (event.key === ']') setBrushSize((size) => clampSize(size + (event.shiftKey ? 10 : 2)))
     }
@@ -354,6 +356,14 @@ export function App() {
           onFitView={() => stageRef.current?.fit()}
           onCutoutStrength={onCutoutStrength}
           onRemoveBackdrop={() => runCutout(cutoutStrength, true)}
+          onRepairCutout={() => {
+            setCutoutBusy(true)
+            window.setTimeout(() => {
+              stageRef.current?.repairCutout()
+              setCutoutBusy(false)
+              flash('Cutout repaired')
+            }, 30)
+          }}
           onResetCutout={() => {
             window.clearTimeout(cutoutTimer.current)
             stageRef.current?.resetCutout()

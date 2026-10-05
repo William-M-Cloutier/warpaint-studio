@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { projectCutout, removeBackdrop, type RgbaBuffer } from '../src/lib/cutout.ts'
+import { projectCutout, removeBackdrop, repairCutout, type RgbaBuffer } from '../src/lib/cutout.ts'
 import { fitPhotoScale, photoScaleToSlider, sliderToPhotoScale } from '../src/lib/photoScale.ts'
 import { compositeSurface, sampleTintHex } from '../src/lib/tint.ts'
 
@@ -211,5 +211,48 @@ assert.equal(bare[3], 0, 'unpainted pixels stay transparent')
 
 assert.equal(sampleTintHex(new Uint8ClampedArray([9, 9, 9, 0]), gone), null)
 assert.equal(sampleTintHex(new Uint8ClampedArray([12, 34, 56, 200]), lit), '#0c2238')
+
+function clearOutside(buffer: RgbaBuffer, x0: number, y0: number, x1: number, y1: number): void {
+  for (let y = 0; y < buffer.height; y += 1) {
+    for (let x = 0; x < buffer.width; x += 1) {
+      if (x >= x0 && x < x1 && y >= y0 && y < y1) continue
+      buffer.data[(y * buffer.width + x) * 4 + 3] = 0
+    }
+  }
+}
+
+const repaired = makeBuffer(48, 48, [250, 250, 250])
+fillRect(repaired, 8, 8, 32, 32, [158, 158, 156])
+clearOutside(repaired, 8, 8, 40, 40)
+fillRect(repaired, 20, 20, 4, 4, [158, 158, 156])
+for (let y = 20; y < 24; y += 1) {
+  for (let x = 20; x < 24; x += 1) repaired.data[(y * repaired.width + x) * 4 + 3] = 0
+}
+fillRect(repaired, 30, 18, 6, 6, [250, 250, 250])
+for (let y = 18; y < 24; y += 1) {
+  for (let x = 30; x < 36; x += 1) repaired.data[(y * repaired.width + x) * 4 + 3] = 0
+}
+repaired.data[(15 * repaired.width + 7) * 4] = 250
+repaired.data[(15 * repaired.width + 7) * 4 + 1] = 250
+repaired.data[(15 * repaired.width + 7) * 4 + 2] = 250
+repaired.data[(15 * repaired.width + 7) * 4 + 3] = 255
+repairCutout(repaired)
+assert.equal(alphaAt(repaired, 0, 0), 0, 'repair leaves the exterior backdrop clear')
+assert.equal(alphaAt(repaired, 21, 21), 255, 'repair fills a small grey hole')
+assert.equal(alphaAt(repaired, 32, 20), 0, 'repair leaves an enclosed white pocket clear')
+assert.equal(alphaAt(repaired, 7, 15), 0, 'repair trims a near-white fringe pixel')
+assert.equal(alphaAt(repaired, 24, 24), 255, 'repair keeps the grey interior solid')
+const rim = alphaAt(repaired, 8, 20)
+assert.ok(rim > 16 && rim < 255, `repair feathers the matte edge (${rim})`)
+
+const wideHole = makeBuffer(200, 200, [250, 250, 250])
+fillRect(wideHole, 10, 10, 180, 180, [150, 150, 148])
+clearOutside(wideHole, 10, 10, 190, 190)
+for (let y = 80; y < 110; y += 1) {
+  for (let x = 80; x < 110; x += 1) wideHole.data[(y * wideHole.width + x) * 4 + 3] = 0
+}
+repairCutout(wideHole)
+assert.equal(alphaAt(wideHole, 90, 90), 0, 'repair does not fill a large transparent region')
+assert.equal(alphaAt(wideHole, 0, 0), 0, 'repair does not restore the outside of a large picture')
 
 console.log('cutout and photo scale checks passed')

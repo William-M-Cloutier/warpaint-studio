@@ -1,4 +1,4 @@
-import { clampCutoutStrength, projectCutout, removeBackdrop } from './cutout'
+import { clampCutoutStrength, projectCutout, removeBackdrop, repairCutout } from './cutout'
 import { clampPhotoScale, fitPhotoScale } from './photoScale'
 import { compositeSurface, sampleTintHex } from './tint'
 import {
@@ -74,7 +74,33 @@ type PickSession = {
   hex: string | null
 }
 
-type Session = DrawSession | PanSession | PickSession
+type MaskTool = 'restore' | 'eraseBackdrop'
+
+type MaskStroke = {
+  tool: MaskTool
+  size: number
+  opacity: number
+  points: Point[]
+}
+
+type MaskSession = {
+  mode: 'mask'
+  pointerId: number
+  stroke: MaskStroke
+  prevBounds: Bounds | null
+}
+
+type Session = DrawSession | PanSession | PickSession | MaskSession
+
+type TimelineKind = 'paint' | 'mask'
+
+function isMaskTool(tool: Tool): tool is MaskTool {
+  return tool === 'restore' || tool === 'eraseBackdrop'
+}
+
+function showsBrushRing(tool: Tool, space: boolean): boolean {
+  return !space && (tool === 'brush' || tool === 'eraser' || isMaskTool(tool))
+}
 
 const MIN_ZOOM = 0.02
 const MAX_ZOOM = 32
@@ -121,6 +147,12 @@ export class PaintSurface {
   private zoom = 1
   private contentScale = 1
   private cutoutActive = false
+  private readonly maskBase = document.createElement('canvas')
+  private readonly maskBackup = document.createElement('canvas')
+  private maskStrokes: MaskStroke[] = []
+  private maskFuture: MaskStroke[] = []
+  private timeline: TimelineKind[] = []
+  private timelineFuture: TimelineKind[] = []
   private disposed = false
   private raf = 0
   private viewRaf = 0
@@ -172,10 +204,7 @@ export class PaintSurface {
     this.brushSize = config.brushSize
     this.opacity = config.opacity
     this.space = config.space
-    if (
-      this.ring &&
-      (config.space || (config.tool !== 'brush' && config.tool !== 'eraser'))
-    ) {
+    if (this.ring && !showsBrushRing(config.tool, config.space)) {
       this.ring.style.visibility = 'hidden'
     }
   }
@@ -194,6 +223,10 @@ export class PaintSurface {
     this.image = image
     this.hist = null
     this.cutoutActive = false
+    this.maskStrokes = []
+    this.maskFuture = []
+    this.timeline = []
+    this.timelineFuture = []
     this.clearDisplay()
     if (!image) {
       this.contentScale = 1
@@ -224,6 +257,7 @@ export class PaintSurface {
       base: null,
       baseHasPixels: false,
     }
+    this.rememberMaskBase()
     this.emitHistory()
     this.fitAttempts = 0
     this.autoScale()
@@ -345,6 +379,7 @@ export class PaintSurface {
           level,
         )
       }
+      repairCutout({ data: pixels.data, width: sourceW, height: sourceH })
       this.sampleCtx.putImageData(pixels, 0, 0)
     } catch {
       this.emit.error('Could not read the photo for a cutout.')
@@ -353,10 +388,44 @@ export class PaintSurface {
     this.session = null
     this.viewport.classList.remove('is-panning')
     this.cutoutActive = true
+    this.rememberMaskBase()
     this.presentPhoto()
     this.present(null)
     this.emitPhoto()
+    this.emitHistory()
     return stats
+  }
+
+  /** Fill small figure holes and trim the near-white rim of the current cutout. */
+  repairMask(): void {
+    if (!this.image || !this.sampleCtx || this.disposed) return
+    const sourceCtx = context2d(this.source)
+    if (!sourceCtx) {
+      this.emit.error('Could not repair the cutout.')
+      return
+    }
+    const width = this.sample.width
+    const height = this.sample.height
+    try {
+      const pixels = this.sampleCtx.getImageData(0, 0, width, height)
+      const source = sourceCtx.getImageData(0, 0, width, height)
+      repairCutout(
+        { data: pixels.data, width, height },
+        { data: source.data, width, height },
+      )
+      this.sampleCtx.putImageData(pixels, 0, 0)
+    } catch {
+      this.emit.error('Could not repair the cutout.')
+      return
+    }
+    this.session = null
+    this.viewport.classList.remove('is-panning')
+    this.cutoutActive = true
+    this.rememberMaskBase()
+    this.presentPhoto()
+    this.present(null)
+    this.emitPhoto()
+    this.emitHistory()
   }
 
   /** Restore the photo from before backdrop removal. Paint strokes stay. */
@@ -366,27 +435,55 @@ export class PaintSurface {
     this.viewport.classList.remove('is-panning')
     this.cutoutActive = false
     this.copySourceToSample()
+    this.rememberMaskBase()
     this.presentPhoto()
     this.present(null)
     this.emitPhoto()
+    this.emitHistory()
   }
 
   undo(): void {
-    const hist = this.hist
-    if (!hist?.actions.length) return
-    const action = hist.actions.pop()
-    if (!action) return
-    hist.future.push(action)
-    this.replay()
+    const kind = this.timeline.pop()
+    if (!kind) return
+    this.timelineFuture.push(kind)
+    if (kind === 'paint') this.stepPaint(-1)
+    else this.stepMask(-1)
   }
 
   redo(): void {
+    const kind = this.timelineFuture.pop()
+    if (!kind) return
+    this.timeline.push(kind)
+    if (kind === 'paint') this.stepPaint(1)
+    else this.stepMask(1)
+  }
+
+  private stepPaint(direction: -1 | 1): void {
     const hist = this.hist
-    if (!hist?.future.length) return
-    const action = hist.future.pop()
-    if (!action) return
-    hist.actions.push(action)
+    if (!hist) return
+    if (direction < 0) {
+      const action = hist.actions.pop()
+      if (!action) return
+      hist.future.push(action)
+    } else {
+      const action = hist.future.pop()
+      if (!action) return
+      hist.actions.push(action)
+    }
     this.replay()
+  }
+
+  private stepMask(direction: -1 | 1): void {
+    if (direction < 0) {
+      const stroke = this.maskStrokes.pop()
+      if (!stroke) return
+      this.maskFuture.push(stroke)
+    } else {
+      const stroke = this.maskFuture.pop()
+      if (!stroke) return
+      this.maskStrokes.push(stroke)
+    }
+    this.replayMask()
   }
 
   clearPaint(): void {
@@ -427,13 +524,31 @@ export class PaintSurface {
     ctx.drawImage(this.source, 0, 0)
   }
 
-  private presentPhoto(): void {
+  private presentPhoto(bounds?: Bounds | null): void {
     const ctx = this.photoCtx
     if (!ctx) return
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.globalCompositeOperation = 'source-over'
-    ctx.clearRect(0, 0, this.photo.width, this.photo.height)
-    ctx.drawImage(this.sample, 0, 0)
+    ctx.imageSmoothingEnabled = false
+    if (!bounds) {
+      ctx.clearRect(0, 0, this.photo.width, this.photo.height)
+      ctx.drawImage(this.sample, 0, 0)
+      return
+    }
+    const region = clampBounds(bounds, this.photo.width, this.photo.height)
+    if (region.w < 1 || region.h < 1) return
+    ctx.clearRect(region.x, region.y, region.w, region.h)
+    ctx.drawImage(
+      this.sample,
+      region.x,
+      region.y,
+      region.w,
+      region.h,
+      region.x,
+      region.y,
+      region.w,
+      region.h,
+    )
   }
 
   private frameZoom(displayWidth: number, displayHeight: number): number {
@@ -504,6 +619,20 @@ export class PaintSurface {
       return
     }
 
+    if (isMaskTool(this.tool)) {
+      const stroke: MaskStroke = {
+        tool: this.tool,
+        size: Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5),
+        opacity: this.opacity,
+        points: [point],
+      }
+      this.snapshotMask()
+      this.session = { mode: 'mask', pointerId: event.pointerId, stroke, prevBounds: null }
+      this.scheduleDraw()
+      this.capture(event)
+      return
+    }
+
     if (this.tool !== 'brush' && this.tool !== 'eraser') return
     const stroke: Stroke = {
       tool: this.tool,
@@ -543,6 +672,8 @@ export class PaintSurface {
       return
     }
 
+    if (session.mode !== 'draw' && session.mode !== 'mask') return
+
     const samples = event.getCoalescedEvents?.() ?? [event]
     let added = false
     for (const sample of samples) {
@@ -564,6 +695,10 @@ export class PaintSurface {
     if (!session || session.pointerId !== event.pointerId) return
     if (session.mode === 'draw') {
       this.finishDraw(session)
+      return
+    }
+    if (session.mode === 'mask') {
+      this.finishMask(session)
       return
     }
     if (session.mode === 'pick' && session.hex) this.emit.pick(session.hex, true)
@@ -604,8 +739,9 @@ export class PaintSurface {
     this.raf = requestAnimationFrame(() => {
       this.raf = 0
       const session = this.session
-      if (!session || session.mode !== 'draw') return
-      this.renderDraw(session)
+      if (!session) return
+      if (session.mode === 'draw') this.renderDraw(session)
+      else if (session.mode === 'mask') this.renderMask(session)
     })
   }
 
@@ -645,6 +781,162 @@ export class PaintSurface {
     if (!ctx) return
     ctx.clearRect(0, 0, this.backup.width, this.backup.height)
     ctx.drawImage(this.tint, 0, 0)
+  }
+
+  private snapshotMask(): void {
+    this.maskBackup.width = this.sample.width
+    this.maskBackup.height = this.sample.height
+    const ctx = context2d(this.maskBackup)
+    if (!ctx) return
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.clearRect(0, 0, this.maskBackup.width, this.maskBackup.height)
+    ctx.drawImage(this.sample, 0, 0)
+  }
+
+  /** The sample as of the last cutout, repair, or reset. Brush strokes replay on top. */
+  private rememberMaskBase(): void {
+    this.maskBase.width = this.sample.width
+    this.maskBase.height = this.sample.height
+    const ctx = context2d(this.maskBase)
+    if (!ctx) return
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.clearRect(0, 0, this.maskBase.width, this.maskBase.height)
+    ctx.drawImage(this.sample, 0, 0)
+    this.maskStrokes = []
+    this.maskFuture = []
+    this.timeline = this.timeline.filter((kind) => kind !== 'mask')
+    this.timelineFuture = this.timelineFuture.filter((kind) => kind !== 'mask')
+  }
+
+  private finishMask(session: MaskSession): void {
+    if (this.raf) {
+      cancelAnimationFrame(this.raf)
+      this.raf = 0
+    }
+    const bounds = strokeBounds({
+      tool: 'brush',
+      color: '#ffffff',
+      size: session.stroke.size,
+      opacity: session.stroke.opacity,
+      points: session.stroke.points,
+    })
+    this.restoreSample(bounds)
+    if (bounds) this.stampMask(session.stroke, bounds)
+    this.presentPhoto(bounds)
+    this.present(bounds)
+    this.session = null
+    this.viewport.classList.remove('is-panning')
+    this.maskStrokes.push(session.stroke)
+    this.maskFuture = []
+    this.timeline.push('mask')
+    this.timelineFuture = []
+    if (!this.cutoutActive) {
+      this.cutoutActive = true
+      this.emitPhoto()
+    }
+    this.emitHistory()
+  }
+
+  private renderMask(session: MaskSession): void {
+    const next = strokeBounds({
+      tool: 'brush',
+      color: '#ffffff',
+      size: session.stroke.size,
+      opacity: session.stroke.opacity,
+      points: session.stroke.points,
+    })
+    if (!next) return
+    const bounds = clampBounds(next, this.sample.width, this.sample.height)
+    const region = session.prevBounds
+      ? clampBounds(unionBounds(session.prevBounds, bounds), this.sample.width, this.sample.height)
+      : bounds
+    this.restoreSample(region)
+    this.stampMask(session.stroke, region)
+    this.presentPhoto(region)
+    this.present(region)
+    session.prevBounds = bounds
+  }
+
+  private restoreSample(bounds: Bounds | null): void {
+    const ctx = this.sampleCtx
+    if (!ctx) return
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.imageSmoothingEnabled = false
+    if (!bounds) {
+      ctx.clearRect(0, 0, this.sample.width, this.sample.height)
+      ctx.drawImage(this.maskBackup, 0, 0)
+      return
+    }
+    const region = clampBounds(bounds, this.sample.width, this.sample.height)
+    if (region.w < 1 || region.h < 1) return
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(region.x, region.y, region.w, region.h)
+    ctx.clip()
+    ctx.drawImage(this.maskBackup, 0, 0)
+    ctx.restore()
+  }
+
+  private stampMask(stroke: MaskStroke, bounds: Bounds): void {
+    const sample = this.sampleCtx
+    const sourceCtx = context2d(this.source)
+    const box = clampBounds(bounds, this.sample.width, this.sample.height)
+    if (!sample || !sourceCtx || box.w < 1 || box.h < 1) return
+    this.work.width = box.w
+    this.work.height = box.h
+    const workCtx = context2d(this.work, { willReadFrequently: true })
+    if (!workCtx) return
+    workCtx.setTransform(1, 0, 0, 1, 0, 0)
+    workCtx.clearRect(0, 0, box.w, box.h)
+    workCtx.save()
+    workCtx.translate(-box.x, -box.y)
+    paintStroke(workCtx, {
+      tool: 'brush',
+      color: '#ffffff',
+      size: stroke.size,
+      opacity: stroke.opacity,
+      points: stroke.points,
+    })
+    workCtx.restore()
+    const cover = workCtx.getImageData(0, 0, box.w, box.h).data
+    const photo = sample.getImageData(box.x, box.y, box.w, box.h)
+    const origin = sourceCtx.getImageData(box.x, box.y, box.w, box.h).data
+    const data = photo.data
+    for (let i = 0; i < data.length; i += 4) {
+      const weight = cover[i + 3] / 255
+      if (weight <= 0) continue
+      if (stroke.tool === 'eraseBackdrop') {
+        data[i + 3] = Math.round(data[i + 3] * (1 - weight))
+      } else {
+        data[i] = origin[i]
+        data[i + 1] = origin[i + 1]
+        data[i + 2] = origin[i + 2]
+        data[i + 3] = Math.round(data[i + 3] + (origin[i + 3] - data[i + 3]) * weight)
+      }
+    }
+    sample.putImageData(photo, box.x, box.y)
+  }
+
+  private replayMask(): void {
+    const ctx = this.sampleCtx
+    if (!ctx) return
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.imageSmoothingEnabled = false
+    ctx.clearRect(0, 0, this.sample.width, this.sample.height)
+    ctx.drawImage(this.maskBase, 0, 0)
+    for (const stroke of this.maskStrokes) {
+      const bounds = strokeBounds({
+        tool: 'brush',
+        color: '#ffffff',
+        size: stroke.size,
+        opacity: stroke.opacity,
+        points: stroke.points,
+      })
+      if (bounds) this.stampMask(stroke, bounds)
+    }
+    this.presentPhoto(null)
+    this.present(null)
+    this.emitHistory()
   }
 
   private clearDisplay(): void {
@@ -691,11 +983,15 @@ export class PaintSurface {
     if (!hist) return
     hist.actions.push(action)
     hist.future = []
+    this.timeline.push('paint')
+    this.timelineFuture = []
     while (hist.actions.length > MAX_HISTORY) this.bakeOldest(hist)
   }
 
   private bakeOldest(hist: Hist): void {
     const action = hist.actions.shift()
+    const paintIndex = this.timeline.indexOf('paint')
+    if (paintIndex >= 0) this.timeline.splice(paintIndex, 1)
     if (!action) return
     if (!hist.base) {
       hist.base = document.createElement('canvas')
@@ -752,11 +1048,7 @@ export class PaintSurface {
   private placeRing(clientX: number, clientY: number): void {
     const ring = this.ring
     if (!ring) return
-    const show =
-      !!this.image &&
-      (this.tool === 'brush' || this.tool === 'eraser') &&
-      !this.space &&
-      this.session?.mode !== 'pan'
+    const show = !!this.image && showsBrushRing(this.tool, this.space) && this.session?.mode !== 'pan'
     if (!show) {
       ring.style.visibility = 'hidden'
       return
@@ -803,8 +1095,8 @@ export class PaintSurface {
       return
     }
     this.emit.history({
-      canUndo: hist.actions.length > 0,
-      canRedo: hist.future.length > 0,
+      canUndo: this.timeline.length > 0,
+      canRedo: this.timelineFuture.length > 0,
       hasPaint: historyHasPaint(hist.actions, hist.baseHasPixels),
     })
   }

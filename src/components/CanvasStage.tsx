@@ -10,6 +10,7 @@ export type StageHandle = {
   autoScale: () => void
   setContentScale: (scale: number) => void
   applyCutout: (strength: number) => CutoutResult | null
+  repairCutout: () => void
   resetCutout: () => void
   setSpace: (held: boolean) => void
 }
@@ -92,6 +93,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     autoScale: () => surfaceRef.current?.autoScale(),
     setContentScale: (scale: number) => surfaceRef.current?.setContentScale(scale),
     applyCutout: (strength: number) => surfaceRef.current?.applyCutout(strength) ?? null,
+    repairCutout: () => surfaceRef.current?.repairMask(),
     resetCutout: () => surfaceRef.current?.resetCutout(),
     setSpace: (held: boolean) => surfaceRef.current?.setSpace(held),
   }))
@@ -137,7 +139,10 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
         </div>
       )}
 
-      <div ref={ringRef} className={tool === 'eraser' ? 'cursor-ring is-eraser' : 'cursor-ring'} />
+      <div
+        ref={ringRef}
+        className={tool === 'eraser' || tool === 'eraseBackdrop' ? 'cursor-ring is-eraser' : 'cursor-ring'}
+      />
 
       {image && (
         <button

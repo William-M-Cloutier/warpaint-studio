@@ -334,8 +334,16 @@ textarea { user-select: text; }
 }
 
 .viewport[data-tool="brush"]:not([data-space="true"]):not(.is-panning),
-.viewport[data-tool="eraser"]:not([data-space="true"]):not(.is-panning) {
+.viewport[data-tool="eraser"]:not([data-space="true"]):not(.is-panning),
+.viewport[data-tool="restore"]:not([data-space="true"]):not(.is-panning),
+.viewport[data-tool="eraseBackdrop"]:not([data-space="true"]):not(.is-panning) {
   cursor: crosshair;
+}
+
+.photo-block .btn[aria-pressed="true"] {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
 .viewport[data-tool="pan"],
