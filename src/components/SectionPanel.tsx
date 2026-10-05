@@ -112,10 +112,7 @@ export function SectionPanel({
           <span className="slider-value">{tolerance}</span>
         </label>
       )}
-      <p className="tool-note">
-        Wand selects a similar area. Lasso outlines one. Mask paints the region. New makes a section; Add and Subtract
-        edit the active one.
-      </p>
+      <p className="tool-note">Wand, lasso, or mask. New starts a section. Add and Subtract edit the active one.</p>
       <button
         type="button"
         className="btn btn-block"
@@ -125,6 +122,7 @@ export function SectionPanel({
       >
         {proposeBusy ? 'Working…' : 'Suggest regions'}
       </button>
+      <div className="section-scroll">
       <button
         type="button"
         className={activeId === null ? 'section-card is-active' : 'section-card'}
@@ -232,6 +230,7 @@ export function SectionPanel({
           })}
         </ul>
       )}
+      </div>
     </aside>
   )
 }
