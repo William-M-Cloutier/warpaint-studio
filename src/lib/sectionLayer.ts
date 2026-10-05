@@ -165,10 +165,7 @@ export class SectionLayer {
   ): SectionResult {
     this.cancelPreview()
     const flooded = floodMask(rgba, this.width, this.height, x, y, tolerance)
-    if (!flooded) return { ok: false, reason: 'That spot is empty. Click the miniature.' }
-    if (flooded.count < MIN_WAND_PIXELS) {
-      return { ok: false, reason: 'Nothing selected. Raise tolerance or click a broader area.' }
-    }
+    if (!flooded || flooded.count < 1) return { ok: false, reason: 'That spot is empty. Click the miniature.' }
     return this.applyFull(flooded.mask, mode)
   }
 

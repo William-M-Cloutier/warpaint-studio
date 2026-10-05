@@ -1,4 +1,6 @@
+import { canvasToBitmap } from './canvasPoint'
 import { clampCutoutStrength, projectCutout, removeBackdrop, repairCutout } from './cutout'
+import { selectionEdges } from './edgeSelect'
 import { clampPhotoScale, fitPhotoScale } from './photoScale'
 import { MAX_SECTION_HISTORY, SectionLayer } from './sectionLayer'
 import { compositeSurface, sampleTintHex } from './tint'
@@ -37,6 +39,7 @@ export type SurfaceConfig = {
   space: boolean
   tolerance: number
   maskMode: MaskMode
+  showEdges: boolean
 }
 
 type SurfaceEvents = {
@@ -192,6 +195,8 @@ export class PaintSurface {
   private opacity = 1
   private space = false
   private tolerance = 48
+  private showEdges = false
+  private edgeMask: Uint8Array | null = null
   private maskMode: MaskMode = 'new'
   private readonly sections = new SectionLayer()
   private overlayCtx: CanvasRenderingContext2D | null = null
@@ -241,11 +246,15 @@ export class PaintSurface {
     this.brushSize = config.brushSize
     this.opacity = config.opacity
     this.space = config.space
+    const edgesDirty =
+      config.showEdges !== this.showEdges || (config.showEdges && config.tolerance !== this.tolerance)
     this.tolerance = config.tolerance
+    this.showEdges = config.showEdges
     this.maskMode = config.maskMode
     if (this.ring && !showsBrushRing(config.tool, config.space)) {
       this.ring.style.visibility = 'hidden'
     }
+    if (edgesDirty) this.rebuildEdges()
   }
 
   setSpace(held: boolean): void {
@@ -271,6 +280,7 @@ export class PaintSurface {
     this.clearDisplay()
     this.clearOverlay()
     if (!image) {
+      this.edgeMask = null
       this.contentScale = 1
       this.photoCtx?.clearRect(0, 0, this.photo.width, this.photo.height)
       this.emitSections()
@@ -306,6 +316,7 @@ export class PaintSurface {
     this.emitHistory()
     this.fitAttempts = 0
     this.autoScale()
+    this.rebuildEdges()
   }
 
   /** Fit the picture by changing photo scale, then frame the view around it. */
@@ -439,6 +450,7 @@ export class PaintSurface {
     this.present(null)
     this.emitPhoto()
     this.emitHistory()
+    this.rebuildEdges()
     return stats
   }
 
@@ -473,6 +485,7 @@ export class PaintSurface {
     this.present(null)
     this.emitPhoto()
     this.emitHistory()
+    this.rebuildEdges()
   }
 
   /** Restore the photo from before backdrop removal. Paint strokes stay. */
@@ -488,6 +501,7 @@ export class PaintSurface {
     this.present(null)
     this.emitPhoto()
     this.emitHistory()
+    this.rebuildEdges()
   }
 
   undo(): void {
@@ -1243,6 +1257,7 @@ export class PaintSurface {
     const ctx = this.overlayCtx
     if (!ctx || this.overlay.width < 1) return
     this.sections.renderOverlay(ctx, area)
+    this.paintEdges()
     if (!lasso || lasso.length === 0) return
     ctx.save()
     ctx.lineJoin = 'round'
@@ -1359,17 +1374,37 @@ export class PaintSurface {
   }
 
   private toImage(clientX: number, clientY: number): Point | null {
-    const rect = this.display.getBoundingClientRect()
-    if (rect.width < 1 || rect.height < 1) return null
-    if (clientX < rect.left || clientY < rect.top || clientX > rect.right || clientY > rect.bottom) {
-      return null
+    return canvasToBitmap(clientX, clientY, this.display.getBoundingClientRect(), this.display.width, this.display.height)
+  }
+
+  private rebuildEdges(): void {
+    if (!this.showEdges || !this.sampleCtx || this.sample.width < 1) {
+      this.edgeMask = null
+      this.refreshOverlay(null, null)
+      return
     }
-    const x = ((clientX - rect.left) / rect.width) * this.display.width
-    const y = ((clientY - rect.top) / rect.height) * this.display.height
-    return {
-      x: clamp(x, 0, Math.max(0, this.display.width - 0.01)),
-      y: clamp(y, 0, Math.max(0, this.display.height - 0.01)),
+    const pixels = this.readSample()
+    this.edgeMask = pixels
+      ? selectionEdges(pixels.data, this.sample.width, this.sample.height, this.tolerance)
+      : null
+    this.refreshOverlay(null, null)
+  }
+
+  private paintEdges(): void {
+    const edges = this.edgeMask
+    const ctx = this.overlayCtx
+    if (!edges || !ctx || edges.length !== this.overlay.width * this.overlay.height) return
+    const image = ctx.getImageData(0, 0, this.overlay.width, this.overlay.height)
+    const data = image.data
+    for (let i = 0; i < edges.length; i += 1) {
+      if (edges[i] === 0) continue
+      const offset = i * 4
+      data[offset] = 255
+      data[offset + 1] = 214
+      data[offset + 2] = 64
+      data[offset + 3] = 230
     }
+    ctx.putImageData(image, 0, 0)
   }
 
   private placeRing(clientX: number, clientY: number): void {

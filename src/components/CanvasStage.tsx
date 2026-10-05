@@ -30,6 +30,7 @@ type CanvasStageProps = {
   opacity: number
   spaceHeld: boolean
   tolerance: number
+  showEdges: boolean
   maskMode: MaskMode
   sectionChip: { name: string; color: string } | null
   onPickColor: (hex: string, commit: boolean) => void
@@ -50,6 +51,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     opacity,
     spaceHeld,
     tolerance,
+    showEdges,
     maskMode,
     sectionChip,
     onPickColor,
@@ -91,9 +93,10 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     opacity,
     space: spaceHeld,
     tolerance,
+    showEdges,
     maskMode,
   })
-  configRef.current = { tool, color, brushSize, opacity, space: spaceHeld, tolerance, maskMode }
+  configRef.current = { tool, color, brushSize, opacity, space: spaceHeld, tolerance, showEdges, maskMode }
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current

@@ -271,6 +271,18 @@ textarea { user-select: text; }
 
 .tool-slider input { accent-color: var(--accent); width: 100%; }
 
+.edge-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.edge-toggle input { accent-color: var(--accent); }
+
 .slider-value {
   letter-spacing: 0;
   text-transform: none;

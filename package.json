@@ -12,6 +12,7 @@
   "dependencies": {
     "@fontsource/fraunces": "^5.2.5",
     "@fontsource/outfit": "^5.2.5",
+    "@techstark/opencv-js": "^5.0.0-release.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

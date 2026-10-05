@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { canvasToBitmap } from '../src/lib/canvasPoint.ts'
+import { selectionEdges } from '../src/lib/edgeSelect.ts'
 import { SectionLayer } from '../src/lib/sectionLayer.ts'
 import {
   blitCoverage,
@@ -270,5 +272,52 @@ assert.equal(layer.list().length, 0)
 layer.undo()
 assert.equal(layer.list().length, 1)
 assert.equal(layer.activeId, id)
+
+const stageW = 180
+const stageH = 120
+const stage = makeBuffer(stageW, stageH, [248, 248, 246, 255])
+fillGradient(stage, stageW, 30, 24, 70, 60, 60, 170)
+fillRect(stage, stageW, 110, 24, 40, 50, [70, 74, 78, 255])
+fillRect(stage, stageW, 122, 32, 3, 34, [8, 8, 8, 255])
+const contentScale = 0.42
+const zoom = 1.65
+const cssW = stageW * contentScale * zoom
+const cssH = stageH * contentScale * zoom
+const rect = { left: 18, top: 36, right: 18 + cssW, bottom: 36 + cssH, width: cssW, height: cssH }
+const mapClick = (bitmapX: number, bitmapY: number) => {
+  const clientX = rect.left + (bitmapX / stageW) * rect.width
+  const clientY = rect.top + (bitmapY / stageH) * rect.height
+  const point = canvasToBitmap(clientX, clientY, rect, stageW, stageH)
+  assert.ok(point, `canvas mapping missed ${bitmapX},${bitmapY}`)
+  assert.ok(Math.abs(point.x - bitmapX) < 0.6 && Math.abs(point.y - bitmapY) < 0.6, 'canvas mapping drifted')
+  return point
+}
+for (const [bitmapX, bitmapY] of [
+  [40, 30],
+  [50, 50],
+  [70, 70],
+  [90, 40],
+] as const) {
+  const point = mapClick(bitmapX, bitmapY)
+  const hit = new SectionLayer()
+  hit.reset(stageW, stageH)
+  const result = hit.wand(stage, point.x, point.y, 48, 'new')
+  assert.equal(result.ok, true, `in-model wand was empty at ${bitmapX},${bitmapY}: ${result.ok ? '' : result.reason}`)
+  const mask = hit.clipForPaint(null).clip?.mask
+  assert.ok(mask)
+  assert.ok(mask[Math.floor(point.y) * stageW + Math.floor(point.x)] > 0, 'selection missed the clicked pixel')
+  assert.equal(mask[2 * stageW + 2], 0, 'canvas-mapped wand took the white field')
+}
+const outside = mapClick(8, 8)
+const miss = new SectionLayer()
+miss.reset(stageW, stageH)
+const missed = miss.wand(stage, outside.x, outside.y, 48, 'new')
+assert.equal(missed.ok, false)
+if (!missed.ok) assert.equal(missed.reason.includes('Nothing selected'), false)
+const edges = selectionEdges(stage, stageW, stageH, 48)
+let edgePixels = 0
+for (let i = 0; i < edges.length; i += 1) if (edges[i] !== 0) edgePixels += 1
+assert.ok(edgePixels > 20, 'edge overlay has no Canny ridges')
+assert.equal(edges[2 * stageW + 2], 0, 'edge overlay paints the white field')
 
 console.log('section checks passed')

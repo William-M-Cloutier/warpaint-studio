@@ -1,18 +1,76 @@
 /**
  * Edge-first region selection for grey miniatures.
  *
- * Walls are thin crests: Sobel magnitude with non-maximum suppression, and a
- * narrow-crease term (fine blur minus a wider blur). A soft highlight is a
- * shallow ramp, so both responses stay weak and the wand walks across it.
- * A sculpt seam is a sharp jump or a thin dark line, and it stays a wall.
- * Plain gradient hysteresis on this photo either chops a plate into texture
- * or merges chest, shield, and base — the crease term is what separates them.
- * Growth is hard-gated to the miniature (cutout alpha, and any border-connected
- * backdrop that is still opaque). Suggest uses the same edges.
+ * Walls come from OpenCV Canny: Gaussian blur, Sobel, non-maximum suppression,
+ * hysteresis. A soft highlight is a shallow ramp, so it stays under the
+ * thresholds and the wand walks across it. A sculpt seam is a sharp jump and
+ * stays a thin edge. Growth never crosses those edges, and it is hard-gated
+ * to the miniature (cutout alpha, and any border-connected backdrop that is
+ * still opaque). Suggest and the edge overlay use the same Canny walls.
  */
 
+import cvModule from '@techstark/opencv-js'
+
 const ALPHA_CUT = 16
-const WORK_SIDE = 760
+const WORK_SIDE = 1600
+
+type CvMat = {
+  data: Uint8Array
+  delete: () => void
+}
+
+type CvApi = {
+  CV_8UC1: number
+  CV_16S: number
+  BORDER_REPLICATE: number
+  MORPH_RECT: number
+  Mat: new () => CvMat
+  Size: new (width: number, height: number) => object
+  Sobel: (
+    src: CvMat,
+    dst: CvMat,
+    ddepth: number,
+    dx: number,
+    dy: number,
+    ksize: number,
+    scale: number,
+    delta: number,
+    borderType: number,
+  ) => void
+  matFromArray: (rows: number, cols: number, type: number, array: Uint8Array) => CvMat
+  GaussianBlur: (
+    src: CvMat,
+    dst: CvMat,
+    ksize: object,
+    sigmaX: number,
+    sigmaY: number,
+    borderType: number,
+  ) => void
+  Canny: (
+    image: CvMat,
+    edges: CvMat,
+    threshold1: number,
+    threshold2: number,
+    apertureSize: number,
+    L2gradient: boolean,
+  ) => void
+  dilate: (src: CvMat, dst: CvMat, kernel: CvMat) => void
+  getStructuringElement: (shape: number, ksize: object) => CvMat
+  onRuntimeInitialized?: () => void
+}
+
+async function loadOpenCv(): Promise<CvApi> {
+  const imported = cvModule as unknown as CvApi | Promise<CvApi>
+  const cv = imported instanceof Promise ? await imported : imported
+  if (typeof cv.Canny !== 'function') {
+    await new Promise<void>((resolve) => {
+      cv.onRuntimeInitialized = () => resolve()
+    })
+  }
+  return cv
+}
+
+const cv = await loadOpenCv()
 
 export type EdgeMap = {
   fullWidth: number
@@ -95,8 +153,32 @@ export function buildEdgeMap(rgba: Uint8ClampedArray, width: number, height: num
     }
   }
 
-  const edge = ridgeField(luma, subject, cw, ch)
+  const edge = new Float32Array(count)
   return { fullWidth: width, fullHeight: height, width: cw, height: ch, scale, subject, edge, luma, subjectCount, off }
+}
+
+/** Full-resolution Canny walls at this tolerance. Same edges the wand starts from. */
+export function selectionEdges(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  tolerance: number,
+): Uint8Array {
+  if (width < 2 || height < 2) return new Uint8Array(Math.max(0, width * height))
+  const map = buildEdgeMap(rgba, width, height)
+  const walls = wallsFor(map, tolerance)
+  const full = new Uint8Array(width * height)
+  const { scale } = map
+  for (let y = 0; y < height; y += 1) {
+    const cy = Math.min(map.height - 1, Math.floor(y / scale))
+    for (let x = 0; x < width; x += 1) {
+      const pixel = y * width + x
+      if (map.off[pixel] !== 0) continue
+      const cx = Math.min(map.width - 1, Math.floor(x / scale))
+      if (walls[cy * map.width + cx] !== 0) full[pixel] = 255
+    }
+  }
+  return full
 }
 
 /**
@@ -231,13 +313,108 @@ function selectOnMap(
     sy = snapped.y
   }
 
-  const walls = wallsFor(map, tolerance)
-  const seed = placeSeed(map, walls, sx, sy)
-  if (seed < 0) return null
-  const grown = growFrom(map, walls, seed)
-  const kept = splitBridges(grown.mask, seed, map.width, map.height)
-  fillEnclosed(kept, map.subject, map.width, map.height, Math.max(12, Math.floor(grown.count * 0.45)))
-  return upsample(kept, map, rgba)
+  const blurred = blurSubject(map)
+  try {
+    let { low, high } = cannyPair(tolerance)
+    const smallPhoto = map.subjectCount < 8000
+    const minCount = smallPhoto ? 8 : Math.max(64, Math.floor(map.subjectCount * 0.004))
+    const maxCount = smallPhoto ? map.subjectCount : Math.max(minCount + 1, Math.floor(map.subjectCount * 0.55))
+    let tooBig: RegionMask | null = null
+    let tooSmall: RegionMask | null = null
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const walls = cannyWalls(blurred, map, low, high)
+      const seed = placeSeed(map, walls, sx, sy)
+      if (seed < 0) {
+        low = Math.min(200, low * 1.4)
+        high = Math.min(240, high * 1.4)
+        continue
+      }
+      const grown = growFrom(map, walls, seed)
+      if (grown.count < 1) {
+        low = Math.min(200, low * 1.4)
+        high = Math.min(240, high * 1.4)
+        continue
+      }
+      const kept = splitBridges(grown.mask, seed, map.width, map.height)
+      fillEnclosed(kept, map.subject, map.width, map.height, Math.max(12, Math.floor(grown.count * 0.85)))
+      const full = upsample(kept, map, rgba)
+      if (!coversClick(full, map, sx, sy)) {
+        low = Math.min(200, low * 1.35)
+        high = Math.min(240, high * 1.35)
+        continue
+      }
+      if (full.count >= minCount && full.count <= maxCount) {
+        if (tooBig && full.count * 6 < tooBig.count) break
+        if (tooSmall && full.count > tooSmall.count * 80 && full.count > map.subjectCount * 0.3) break
+        return full
+      }
+      if (full.count > maxCount) {
+        if (!tooBig || full.count < tooBig.count) tooBig = full
+        low = Math.max(2, low * 0.72)
+        high = Math.max(low + 1, high * 0.72)
+      } else {
+        if (!tooSmall || full.count > tooSmall.count) tooSmall = full
+        low = Math.min(200, low * 1.45)
+        high = Math.min(240, high * 1.45)
+      }
+    }
+    // A flood is not a plate. A click on a seam already returned the neighboring plate above.
+    const partialFloor = Math.max(8, Math.floor(minCount * 0.5))
+    if (tooSmall && tooSmall.count >= partialFloor && coversClick(tooSmall, map, sx, sy)) return tooSmall
+    return localFallback(map, rgba, sx, sy)
+  } finally {
+    blurred.delete()
+  }
+}
+
+/** A seam click sits on the wall, one or two pixels outside the plate it belongs to. */
+function coversClick(region: RegionMask, map: EdgeMap, sx: number, sy: number): boolean {
+  const width = map.fullWidth
+  const height = map.fullHeight
+  const origin = sy * width + sx
+  if (region.mask[origin] !== 0) return true
+  const prev = new Int32Array(width * height)
+  prev.fill(-2)
+  const queue = new Int32Array(width * height)
+  let head = 0
+  let tail = 0
+  queue[tail] = origin
+  tail += 1
+  prev[origin] = -1
+  let found = -1
+  while (head < tail) {
+    const index = queue[head]
+    head += 1
+    const x = index % width
+    const y = (index - x) / width
+    if (Math.max(Math.abs(x - sx), Math.abs(y - sy)) > 4) continue
+    if (index !== origin && region.mask[index] !== 0) {
+      found = index
+      break
+    }
+    const step = (nx: number, ny: number) => {
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) return
+      const next = ny * width + nx
+      if (prev[next] !== -2 || map.off[next] !== 0) return
+      prev[next] = index
+      queue[tail] = next
+      tail += 1
+    }
+    step(x - 1, y)
+    step(x + 1, y)
+    step(x, y - 1)
+    step(x, y + 1)
+  }
+  if (found < 0) return false
+  let cursor = prev[found]
+  while (cursor >= 0) {
+    if (region.mask[cursor] === 0) {
+      region.mask[cursor] = 255
+      region.count += 1
+    }
+    cursor = prev[cursor]
+  }
+  return true
 }
 
 function suggestOnMap(map: EdgeMap, rgba: Uint8ClampedArray, tolerance: number): RegionMask[] {
@@ -263,197 +440,214 @@ function chooseScale(width: number, height: number): number {
   return Math.max(2, Math.round(maxSide / WORK_SIDE))
 }
 
-/**
- * Crest map used as walls. Sobel magnitude is thinned like Canny (non-maximum
- * suppression on a light blur). The narrow-crease term is high only where a
- * thin line differs from its neighborhood, and near zero on a linear ramp.
- * Each is scaled by its own peak so a strong seam lands near 40.
- */
-function ridgeField(luma: Float32Array, subject: Uint8Array, width: number, height: number): Float32Array {
-  const maxSide = Math.max(width, height)
-  const fine = boxBlur(luma, subject, width, height, 1)
-  const broad = boxBlur(luma, subject, width, height, Math.max(3, Math.round(maxSide / 100)))
-  const dog = new Float32Array(width * height)
-  for (let i = 0; i < dog.length; i += 1) {
-    if (subject[i] === 0) continue
-    dog[i] = Math.abs(fine[i] - broad[i])
-  }
-  const dogRidge = thinRidge(boxBlur(dog, subject, width, height, 1), subject, width, height)
-  const stepRidge = gradientRidge(luma, subject, width, height)
-  const dogPeak = Math.max(quantile(dogRidge, subject, 0.995), 1)
-  const stepPeak = Math.max(quantile(stepRidge, subject, 0.995), 1)
-  const edge = new Float32Array(width * height)
-  for (let i = 0; i < edge.length; i += 1) {
-    if (subject[i] === 0) continue
-    edge[i] = Math.max(dogRidge[i] / dogPeak, stepRidge[i] / stepPeak) * 40
-  }
-  return edge
-}
-
-/** Crest of the luminance gradient. A linear shade ramp is flat, so it drops out. */
-function gradientRidge(luma: Float32Array, subject: Uint8Array, width: number, height: number): Float32Array {
-  const smooth = boxBlur(luma, subject, width, height, 2)
-  const mag = new Float32Array(width * height)
-  const gx = new Float32Array(width * height)
-  const gy = new Float32Array(width * height)
-  const at = (x: number, y: number, fallback: number) => {
-    if (x < 0 || y < 0 || x >= width || y >= height) return fallback
-    const index = y * width + x
-    return subject[index] === 0 ? fallback : smooth[index]
-  }
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const index = y * width + x
-      if (subject[index] === 0) continue
-      const center = smooth[index]
-      const gxx =
-        -at(x - 1, y - 1, center) +
-        at(x + 1, y - 1, center) -
-        2 * at(x - 1, y, center) +
-        2 * at(x + 1, y, center) -
-        at(x - 1, y + 1, center) +
-        at(x + 1, y + 1, center)
-      const gyy =
-        -at(x - 1, y - 1, center) -
-        2 * at(x, y - 1, center) -
-        at(x + 1, y - 1, center) +
-        at(x - 1, y + 1, center) +
-        2 * at(x, y + 1, center) +
-        at(x + 1, y + 1, center)
-      gx[index] = gxx
-      gy[index] = gyy
-      mag[index] = Math.hypot(gxx, gyy)
-    }
-  }
-  const out = new Float32Array(width * height)
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
-      const index = y * width + x
-      if (subject[index] === 0 || mag[index] <= 0) continue
-      let nx = 0
-      let ny = 0
-      if (Math.abs(gx[index]) >= Math.abs(gy[index])) nx = gx[index] >= 0 ? 1 : -1
-      else ny = gy[index] >= 0 ? 1 : -1
-      const ahead = mag[index + ny * width + nx]
-      const behind = mag[index - ny * width - nx]
-      if (mag[index] > ahead + 0.8 && mag[index] > behind + 0.8) out[index] = mag[index]
-    }
-  }
-  return out
-}
-
-/** Keep the crest of a ridge so the wall sits on the seam instead of a wide halo. */
-function thinRidge(edge: Float32Array, subject: Uint8Array, width: number, height: number): Float32Array {
-  const out = new Float32Array(edge.length)
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
-      const index = y * width + x
-      if (subject[index] === 0 || edge[index] <= 0) continue
-      const gx = edge[index + 1] - edge[index - 1]
-      const gy = edge[index + width] - edge[index - width]
-      let nx = 0
-      let ny = 0
-      if (Math.abs(gx) >= Math.abs(gy)) nx = gx >= 0 ? 1 : -1
-      else ny = gy >= 0 ? 1 : -1
-      const ahead = edge[index + ny * width + nx]
-      const behind = edge[index - ny * width - nx]
-      if (edge[index] > ahead && edge[index] > behind) out[index] = edge[index]
-    }
-  }
-  return out
+function cannyPair(tolerance: number): { low: number; high: number } {
+  const high = clamp(20 + (tolerance / 48) * 30, 12, 140)
+  const low = Math.max(5, high * 0.4)
+  return { low, high }
 }
 
 function wallsFor(map: EdgeMap, tolerance: number): Uint8Array {
-  const t = clamp01(tolerance / 120)
-  // Edge values are scaled so a strong seam is ~40. Higher tolerance
-  // keeps only the stronger creases, so a faint plate line can be crossed.
-  const cut = 6 + t * 16
-  const walls = new Uint8Array(map.edge.length)
-  for (let i = 0; i < walls.length; i += 1) {
-    if (map.subject[i] !== 0 && map.edge[i] >= cut) walls[i] = 1
+  const blurred = blurSubject(map)
+  try {
+    const { low, high } = cannyPair(tolerance)
+    return cannyWalls(blurred, map, low, high)
+  } finally {
+    blurred.delete()
   }
-  const radius = Math.max(1, Math.round(Math.max(map.width, map.height) / 420))
-  dilateWalls(walls, map.subject, map.width, map.height, t < 0.8 ? radius : 1)
-  return walls
 }
 
-function boxBlur(
-  src: Float32Array,
-  subject: Uint8Array,
-  width: number,
-  height: number,
-  radius: number,
-): Float32Array {
-  if (radius < 1) return src.slice()
-  const temp = new Float32Array(width * height)
-  blurAxis(src, subject, width, height, radius, temp, true)
-  const dst = new Float32Array(width * height)
-  blurAxis(temp, subject, width, height, radius, dst, false)
-  return dst
-}
-
-function blurAxis(
-  src: Float32Array,
-  subject: Uint8Array,
-  width: number,
-  height: number,
-  radius: number,
-  dst: Float32Array,
-  horizontal: boolean,
-): void {
-  const length = horizontal ? width : height
-  const lines = horizontal ? height : width
-  for (let line = 0; line < lines; line += 1) {
-    const indexAt = (cursor: number) => (horizontal ? line * width + cursor : cursor * width + line)
-    let sum = 0
-    let count = 0
-    const add = (cursor: number, sign: number) => {
-      if (cursor < 0 || cursor >= length) return
-      const index = indexAt(cursor)
-      if (subject[index] === 0) return
-      sum += src[index] * sign
-      count += sign
+/**
+ * OpenCV Canny on the miniature. Off-model pixels continue the local slope,
+ * so a shade ramp does not kink into a flat fill and become a fake edge.
+ */
+function blurSubject(map: EdgeMap): CvMat {
+  const { width, height, luma, subject } = map
+  const gray = new Uint8Array(width * height)
+  const source = new Int32Array(width * height)
+  source.fill(-1)
+  for (let i = 0; i < gray.length; i += 1) {
+    if (subject[i] === 0) continue
+    gray[i] = clamp(Math.round(luma[i]), 1, 255)
+    source[i] = i
+  }
+  const queue = new Int32Array(gray.length)
+  let tail = 0
+  for (let i = 0; i < subject.length; i += 1) if (subject[i] !== 0) queue[tail++] = i
+  let head = 0
+  while (head < tail) {
+    const index = queue[head++]
+    const x = index % width
+    const y = (index - x) / width
+    const push = (nx: number, ny: number) => {
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) return
+      const next = ny * width + nx
+      if (source[next] !== -1) return
+      source[next] = source[index]
+      queue[tail++] = next
     }
-    for (let cursor = -radius; cursor <= radius; cursor += 1) add(cursor, 1)
-    for (let cursor = 0; cursor < length; cursor += 1) {
-      const index = indexAt(cursor)
-      if (subject[index] === 0) dst[index] = 0
-      else dst[index] = count > 0 ? sum / count : src[index]
-      add(cursor - radius, -1)
-      add(cursor + radius + 1, 1)
+    if (x > 0) push(x - 1, y)
+    if (x + 1 < width) push(x + 1, y)
+    if (y > 0) push(x, y - 1)
+    if (y + 1 < height) push(x, y + 1)
+  }
+  for (let i = 0; i < gray.length; i += 1) {
+    if (subject[i] !== 0 || source[i] < 0) continue
+    const sx = source[i] % width
+    const sy = (source[i] - sx) / width
+    const x = i % width
+    const y = (i - x) / width
+    const rx = sx + (sx - x)
+    const ry = sy + (sy - y)
+    let value = gray[source[i]]
+    if (rx >= 0 && ry >= 0 && rx < width && ry < height && subject[ry * width + rx] !== 0) {
+      value = 2 * gray[source[i]] - gray[ry * width + rx]
     }
+    gray[i] = clamp(Math.round(value), 1, 255)
+  }
+  const src = cv.matFromArray(height, width, cv.CV_8UC1, gray)
+  const blurred = new cv.Mat()
+  cv.GaussianBlur(src, blurred, new cv.Size(5, 5), 1.1, 1.1, cv.BORDER_REPLICATE)
+  src.delete()
+  return blurred
+}
+
+function cannyWalls(blurred: CvMat, map: EdgeMap, low: number, high: number): Uint8Array {
+  const edges = new cv.Mat()
+  const dx = new cv.Mat()
+  const dy = new cv.Mat()
+  const dilated = new cv.Mat()
+  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3))
+  try {
+    cv.Sobel(blurred, dx, cv.CV_16S, 1, 0, 3, 1, 0, cv.BORDER_REPLICATE)
+    cv.Sobel(blurred, dy, cv.CV_16S, 0, 1, 3, 1, 0, cv.BORDER_REPLICATE)
+    cv.Canny(blurred, edges, low, Math.max(high, low + 1), 3, true)
+    const rim = inwardRim(map.subject, map.width, map.height, 5)
+    const kept = new Uint8Array(map.width * map.height)
+    const raw = edges.data
+    for (let i = 0; i < kept.length; i += 1) {
+      if (map.subject[i] === 0 || raw[i] === 0) continue
+      if (rimEcho(dx, dy, rim, i, high)) continue
+      kept[i] = 255
+    }
+    const keptMat = cv.matFromArray(map.height, map.width, cv.CV_8UC1, kept)
+    cv.dilate(keptMat, dilated, kernel)
+    keptMat.delete()
+    const src = dilated.data
+    const walls = new Uint8Array(map.width * map.height)
+    for (let i = 0; i < walls.length; i += 1) {
+      const on = map.subject[i] !== 0 && src[i] !== 0 && !rimEcho(dx, dy, rim, i, high)
+      walls[i] = on ? 1 : 0
+      map.edge[i] = on ? 255 : 0
+    }
+    return walls
+  } finally {
+    edges.delete()
+    dx.delete()
+    dy.delete()
+    dilated.delete()
+    kernel.delete()
   }
 }
 
-function quantile(values: Float32Array, subject: Uint8Array, q: number): number {
-  const sample: number[] = []
-  const stride = Math.max(1, Math.floor(subject.length / 80000))
-  for (let i = 0; i < subject.length; i += stride) {
-    if (subject[i] !== 0) sample.push(values[i])
+type InwardRim = { dist: Uint8Array; dirX: Int8Array; dirY: Int8Array }
+
+function inwardRim(subject: Uint8Array, width: number, height: number, radius: number): InwardRim {
+  const count = width * height
+  const dist = new Uint8Array(count)
+  const dirX = new Int8Array(count)
+  const dirY = new Int8Array(count)
+  const queue = new Int32Array(count)
+  let tail = 0
+  for (let i = 0; i < count; i += 1) {
+    if (subject[i] !== 0) continue
+    dist[i] = 1
+    queue[tail] = i
+    tail += 1
   }
-  if (sample.length === 0) return 0
-  sample.sort((a, b) => a - b)
-  const index = clamp(Math.round(q * (sample.length - 1)), 0, sample.length - 1)
-  return sample[index]
+  let head = 0
+  while (head < tail) {
+    const index = queue[head]
+    head += 1
+    if (dist[index] > radius) continue
+    const x = index % width
+    const step = (nx: number, ny: number, sx: number, sy: number) => {
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) return
+      const next = ny * width + nx
+      if (dist[next] !== 0) return
+      dist[next] = dist[index] + 1
+      dirX[next] = sx
+      dirY[next] = sy
+      queue[tail] = next
+      tail += 1
+    }
+    step(x - 1, (index - x) / width, -1, 0)
+    step(x + 1, (index - x) / width, 1, 0)
+    step(x, (index - x) / width - 1, 0, -1)
+    step(x, (index - x) / width + 1, 0, 1)
+  }
+  return { dist, dirX, dirY }
 }
 
-function dilateWalls(walls: Uint8Array, subject: Uint8Array, width: number, height: number, radius: number): void {
-  const copy = walls.slice()
+function sobelSample(mat: CvMat, index: number): number {
+  const offset = index * 2
+  const value = mat.data[offset] | (mat.data[offset + 1] << 8)
+  return value > 32767 ? value - 65536 : value
+}
+
+/** A shade ramp kinks where the flat outside fill meets it, a few pixels inside the outline. */
+function rimEcho(dx: CvMat, dy: CvMat, rim: InwardRim, index: number, high: number): boolean {
+  const distance = rim.dist[index]
+  if (distance < 2 || distance > 6) return false
+  const gx = sobelSample(dx, index)
+  const gy = sobelSample(dy, index)
+  const mag = Math.hypot(gx, gy)
+  if (mag >= high || mag < 1) return false
+  const along = Math.abs(gx * rim.dirX[index] + gy * rim.dirY[index]) / mag
+  return along > 0.75
+}
+
+function localFallback(
+  map: EdgeMap,
+  rgba: Uint8ClampedArray,
+  fullX: number,
+  fullY: number,
+): RegionMask | null {
+  const { width, height, scale, subject } = map
+  const cx = clamp(Math.floor(fullX / scale), 0, width - 1)
+  const cy = clamp(Math.floor(fullY / scale), 0, height - 1)
+  const origin = cy * width + cx
+  if (subject[origin] === 0) return null
+  const walls = new Uint8Array(width * height)
+  const radius = 18
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      if (copy[y * width + x] === 0) continue
-      for (let dy = -radius; dy <= radius; dy += 1) {
-        const ny = y + dy
-        if (ny < 0 || ny >= height) continue
-        for (let dx = -radius; dx <= radius; dx += 1) {
-          const nx = x + dx
-          if (nx < 0 || nx >= width) continue
-          const index = ny * width + nx
-          if (subject[index] !== 0) walls[index] = 1
-        }
-      }
+      if (subject[y * width + x] === 0) continue
+      if (Math.abs(x - cx) > radius || Math.abs(y - cy) > radius) walls[y * width + x] = 1
     }
   }
+  const mask = new Uint8Array(width * height)
+  const queue = new Int32Array(width * height)
+  let head = 0
+  let tail = 0
+  mask[origin] = 1
+  queue[tail++] = origin
+  let count = 1
+  while (head < tail) {
+    const index = queue[head++]
+    const x = index % width
+    const step = (next: number) => {
+      if (mask[next] !== 0 || subject[next] === 0 || walls[next] !== 0) return
+      mask[next] = 1
+      count += 1
+      queue[tail++] = next
+    }
+    if (x > 0) step(index - 1)
+    if (x + 1 < width) step(index + 1)
+    if (index >= width) step(index - width)
+    if (index + width < mask.length) step(index + width)
+  }
+  if (count < 1) return null
+  return upsample(mask, map, rgba)
 }
 
 /** Snap the click onto the local plate, then take in the flat neighborhood. */
@@ -490,10 +684,11 @@ function placeSeed(map: EdgeMap, walls: Uint8Array, fullX: number, fullY: number
       }
     }
   }
-  // A click on a halo spike or a seam is a ridge. Step into the nearest real plate.
+  // A click on a seam is a ridge. Step into the nearest open plate.
   if (walls[best] !== 0) {
     const escaped = nearestPlate(subject, walls, width, height, best)
-    if (escaped >= 0) best = escaped
+    if (escaped < 0) return -1
+    best = escaped
   }
 
   const mask = new Uint8Array(width * height)
@@ -535,16 +730,14 @@ function placeSeed(map: EdgeMap, walls: Uint8Array, fullX: number, fullY: number
 const mapSeedScratch = new WeakMap<EdgeMap, Uint8Array>()
 
 function growFrom(map: EdgeMap, walls: Uint8Array, seed: number): { mask: Uint8Array; count: number } {
-  const { width, height, subject, subjectCount } = map
+  const { width, height, subject } = map
   const mask = new Uint8Array(width * height)
-  const cap = Math.max(48, Math.floor(subjectCount * 0.42))
   const queue = new Int32Array(width * height)
   let head = 0
   let tail = 0
   let count = 0
   const push = (index: number) => {
     if (mask[index] !== 0 || subject[index] === 0 || walls[index] !== 0) return
-    if (count >= cap) return
     mask[index] = 1
     count += 1
     queue[tail] = index
@@ -555,12 +748,8 @@ function growFrom(map: EdgeMap, walls: Uint8Array, seed: number): { mask: Uint8A
   if (preset) {
     for (let i = 0; i < preset.length; i += 1) if (preset[i] !== 0) push(i)
   }
-  if (count === 0) {
-    mask[seed] = 1
-    count = 1
-    queue[tail] = seed
-    tail += 1
-  }
+  if (count === 0 && subject[seed] !== 0 && walls[seed] === 0) push(seed)
+  if (count === 0) return { mask, count: 0 }
   while (head < tail) {
     const index = queue[head]
     head += 1
@@ -956,7 +1145,7 @@ function nearestPlate(
   seen[origin] = 1
   queue[tail] = origin
   tail += 1
-  const limit = Math.max(28, Math.round(Math.min(width, height) / 7))
+  const limit = 28
   const ox = origin % width
   const oy = (origin - ox) / width
   while (head < tail) {
@@ -1062,9 +1251,4 @@ function nearestSubject(subject: Uint8Array, width: number, height: number, cx: 
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
-}
-
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  return Math.max(0, Math.min(1, value))
 }

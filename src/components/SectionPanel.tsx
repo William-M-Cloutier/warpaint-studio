@@ -9,10 +9,12 @@ type SectionPanelProps = {
   activeId: string | null
   maskMode: MaskMode
   tolerance: number
+  showEdges: boolean
   proposeBusy: boolean
   onTool: (tool: Tool) => void
   onMaskMode: (mode: MaskMode) => void
   onTolerance: (value: number) => void
+  onShowEdges: (value: boolean) => void
   onSelect: (id: string | null) => void
   onRename: (id: string, name: string) => void
   onCategory: (id: string, category: SectionCategory, customLabel: string) => void
@@ -41,10 +43,12 @@ export function SectionPanel({
   activeId,
   maskMode,
   tolerance,
+  showEdges,
   proposeBusy,
   onTool,
   onMaskMode,
   onTolerance,
+  onShowEdges,
   onSelect,
   onRename,
   onCategory,
@@ -112,9 +116,19 @@ export function SectionPanel({
           <span className="slider-value">{tolerance}</span>
         </label>
       )}
+      <label className="edge-toggle">
+        <input
+          type="checkbox"
+          checked={showEdges}
+          disabled={!hasImage}
+          onChange={(event) => onShowEdges(event.target.checked)}
+        />
+        <span>Show edges</span>
+      </label>
       <p className="tool-note">
-        Edge-aware wand. It grows across a plate and stops at a sculpt edge, so a shade ramp stays one region.
-        New starts a section. Add and Subtract edit the active one. Suggest uses the same edges.
+        Edge-aware wand. It grows across a plate and stops at a Canny ridge, so a shade ramp stays one region.
+        Show edges draws those ridges on the photo. New starts a section. Add and Subtract edit the active one.
+        Suggest uses the same edges.
       </p>
       <button
         type="button"
