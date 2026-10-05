@@ -1,5 +1,6 @@
 import { clampCutoutStrength, projectCutout, removeBackdrop, repairCutout } from './cutout'
 import { clampPhotoScale, fitPhotoScale } from './photoScale'
+import { MAX_SECTION_HISTORY, SectionLayer } from './sectionLayer'
 import { compositeSurface, sampleTintHex } from './tint'
 import {
   MAX_HISTORY,
@@ -14,7 +15,7 @@ import {
   type Point,
   type Stroke,
 } from './paint'
-import type { HistoryState, LoadedPhoto, PhotoState, Tool } from '../types'
+import type { HistoryState, LoadedPhoto, MaskMode, PhotoState, SectionInfo, Tool } from '../types'
 
 export type ViewState = {
   x: number
@@ -34,6 +35,8 @@ export type SurfaceConfig = {
   brushSize: number
   opacity: number
   space: boolean
+  tolerance: number
+  maskMode: MaskMode
 }
 
 type SurfaceEvents = {
@@ -43,6 +46,7 @@ type SurfaceEvents = {
   pick: (hex: string, commit: boolean) => void
   stroke: (hex: string) => void
   error: (message: string) => void
+  sections: (sections: SectionInfo[], activeId: string | null) => void
 }
 
 type Hist = {
@@ -90,16 +94,41 @@ type MaskSession = {
   prevBounds: Bounds | null
 }
 
-type Session = DrawSession | PanSession | PickSession | MaskSession
+type LassoSession = {
+  mode: 'lasso'
+  pointerId: number
+  points: Point[]
+  maskMode: MaskMode
+}
 
-type TimelineKind = 'paint' | 'mask'
+type WandSession = {
+  mode: 'wand'
+  pointerId: number
+}
+
+type SectionBrushSession = {
+  mode: 'section-brush'
+  pointerId: number
+  points: Point[]
+  size: number
+  opacity: number
+  prevBounds: Bounds | null
+}
+
+type Session = DrawSession | PanSession | PickSession | MaskSession | LassoSession | WandSession | SectionBrushSession
+
+type TimelineKind = 'paint' | 'mask' | 'section'
 
 function isMaskTool(tool: Tool): tool is MaskTool {
   return tool === 'restore' || tool === 'eraseBackdrop'
 }
 
+function isSectionTool(tool: Tool): tool is 'wand' | 'lasso' | 'maskBrush' {
+  return tool === 'wand' || tool === 'lasso' || tool === 'maskBrush'
+}
+
 function showsBrushRing(tool: Tool, space: boolean): boolean {
-  return !space && (tool === 'brush' || tool === 'eraser' || isMaskTool(tool))
+  return !space && (tool === 'brush' || tool === 'eraser' || tool === 'maskBrush' || isMaskTool(tool))
 }
 
 const MIN_ZOOM = 0.02
@@ -124,7 +153,7 @@ function context2d(
  * the view and do not resample the photo. Backdrop removal keeps the original on
  * `source` and writes transparency into the sample the tint is shaded with.
  *
- * TODO(section-layers): this is one paint layer. Edge and section layers are later.
+ * TODO(edge-snap): section masks clip paint, but a stroke does not pull itself onto photo edges.
  * TODO(view-backgrounds): no replacement backdrop. The viewport checkerboard shows through a cutout.
  * TODO(multi-angle): one photo fills the stage. A 2×2 layout is later.
  * TODO(lighting): no lighting presets on the preview.
@@ -162,6 +191,12 @@ export class PaintSurface {
   private brushSize = 28
   private opacity = 1
   private space = false
+  private tolerance = 32
+  private maskMode: MaskMode = 'new'
+  private readonly sections = new SectionLayer()
+  private overlayCtx: CanvasRenderingContext2D | null = null
+  /** Alpha of the cutout sample. Replaced, never mutated, so old strokes keep their clip. */
+  private cutoutAlpha: Uint8Array | null = null
 
   constructor(
     /** Visible photo, including cutout transparency. The tint is shaded against this. */
@@ -170,6 +205,8 @@ export class PaintSurface {
     private readonly tint: HTMLCanvasElement,
     /** Visible coat. Transparent where the tint has not been painted. */
     private readonly display: HTMLCanvasElement,
+    /** Section mask wash. Sits above the coat so the active region stays visible. */
+    private readonly overlay: HTMLCanvasElement,
     private readonly viewport: HTMLElement,
     private readonly emit: SurfaceEvents,
   ) {
@@ -204,6 +241,8 @@ export class PaintSurface {
     this.brushSize = config.brushSize
     this.opacity = config.opacity
     this.space = config.space
+    this.tolerance = config.tolerance
+    this.maskMode = config.maskMode
     if (this.ring && !showsBrushRing(config.tool, config.space)) {
       this.ring.style.visibility = 'hidden'
     }
@@ -223,14 +262,18 @@ export class PaintSurface {
     this.image = image
     this.hist = null
     this.cutoutActive = false
+    this.cutoutAlpha = null
     this.maskStrokes = []
     this.maskFuture = []
     this.timeline = []
     this.timelineFuture = []
+    this.sections.reset(image ? image.width : 0, image ? image.height : 0)
     this.clearDisplay()
+    this.clearOverlay()
     if (!image) {
       this.contentScale = 1
       this.photoCtx?.clearRect(0, 0, this.photo.width, this.photo.height)
+      this.emitSections()
       this.emitHistory()
       this.emitPhoto()
       this.emitView()
@@ -240,6 +283,7 @@ export class PaintSurface {
     const sourceCtx = context2d(this.source)
     if (!sourceCtx || !this.sampleCtx || !this.photoCtx) {
       this.emit.error('Could not prepare that photo.')
+      this.emitSections()
       this.emitHistory()
       this.emitPhoto()
       return
@@ -258,6 +302,7 @@ export class PaintSurface {
       baseHasPixels: false,
     }
     this.rememberMaskBase()
+    this.emitSections()
     this.emitHistory()
     this.fitAttempts = 0
     this.autoScale()
@@ -389,6 +434,7 @@ export class PaintSurface {
     this.viewport.classList.remove('is-panning')
     this.cutoutActive = true
     this.rememberMaskBase()
+    this.syncCutoutAlpha()
     this.presentPhoto()
     this.present(null)
     this.emitPhoto()
@@ -422,6 +468,7 @@ export class PaintSurface {
     this.viewport.classList.remove('is-panning')
     this.cutoutActive = true
     this.rememberMaskBase()
+    this.syncCutoutAlpha()
     this.presentPhoto()
     this.present(null)
     this.emitPhoto()
@@ -436,6 +483,7 @@ export class PaintSurface {
     this.cutoutActive = false
     this.copySourceToSample()
     this.rememberMaskBase()
+    this.syncCutoutAlpha()
     this.presentPhoto()
     this.present(null)
     this.emitPhoto()
@@ -447,7 +495,8 @@ export class PaintSurface {
     if (!kind) return
     this.timelineFuture.push(kind)
     if (kind === 'paint') this.stepPaint(-1)
-    else this.stepMask(-1)
+    else if (kind === 'mask') this.stepMask(-1)
+    else this.stepSection(-1)
   }
 
   redo(): void {
@@ -455,7 +504,8 @@ export class PaintSurface {
     if (!kind) return
     this.timeline.push(kind)
     if (kind === 'paint') this.stepPaint(1)
-    else this.stepMask(1)
+    else if (kind === 'mask') this.stepMask(1)
+    else this.stepSection(1)
   }
 
   private stepPaint(direction: -1 | 1): void {
@@ -486,6 +536,62 @@ export class PaintSurface {
     this.replayMask()
   }
 
+  private stepSection(direction: -1 | 1): void {
+    if (direction < 0) this.sections.undo()
+    else this.sections.redo()
+    this.sections.invalidateOverlay()
+    this.refreshOverlay(null, null)
+    this.emitSections()
+    this.emitHistory()
+  }
+
+  selectSection(id: string | null): void {
+    if (!this.sections.select(id)) return
+    this.sections.invalidateOverlay()
+    this.refreshOverlay(null, null)
+    this.emitSections()
+  }
+
+  renameSection(id: string, name: string): void {
+    if (!this.sections.rename(id, name)) return
+    this.emitSections()
+  }
+
+  labelSection(id: string, category: SectionInfo['category'], customLabel: string): void {
+    if (!this.sections.setLabel(id, category, customLabel)) return
+    this.emitSections()
+  }
+
+  setSectionVisible(id: string, visible: boolean): void {
+    if (!this.sections.setVisible(id, visible)) return
+    this.sections.invalidateOverlay()
+    this.refreshOverlay(null, null)
+    this.emitSections()
+  }
+
+  setSectionLocked(id: string, locked: boolean): void {
+    if (!this.sections.setLocked(id, locked)) return
+    this.emitSections()
+  }
+
+  deleteSection(id: string): void {
+    if (!this.sections.remove(id)) return
+    this.noteSectionEdit()
+  }
+
+  proposeSections(): number {
+    if (!this.image || !this.sampleCtx || this.disposed) return 0
+    const pixels = this.readSample()
+    if (!pixels) return 0
+    const count = this.sections.propose(pixels.data)
+    if (count > 0) this.noteSectionEdit()
+    else {
+      this.refreshOverlay(null, null)
+      this.emitSections()
+    }
+    return count
+  }
+
   clearPaint(): void {
     if (!this.hist || !historyHasPaint(this.hist.actions, this.hist.baseHasPixels)) return
     this.session = null
@@ -509,10 +615,13 @@ export class PaintSurface {
     this.sample.height = height
     this.source.width = width
     this.source.height = height
+    this.overlay.width = width
+    this.overlay.height = height
     this.photoCtx = context2d(this.photo)
     this.tintCtx = context2d(this.tint, { willReadFrequently: true })
     this.displayCtx = context2d(this.display)
     this.sampleCtx = context2d(this.sample, { willReadFrequently: true })
+    this.overlayCtx = context2d(this.overlay)
   }
 
   private copySourceToSample(): void {
@@ -611,6 +720,11 @@ export class PaintSurface {
     const point = this.toImage(event.clientX, event.clientY)
     if (!point) return
 
+    if (isSectionTool(this.tool)) {
+      this.startSection(event, point)
+      return
+    }
+
     if (this.tool === 'eyedropper') {
       const hex = this.sampleColor(point)
       this.session = { mode: 'pick', pointerId: event.pointerId, hex }
@@ -634,12 +748,18 @@ export class PaintSurface {
     }
 
     if (this.tool !== 'brush' && this.tool !== 'eraser') return
+    const clipTarget = this.sections.clipForPaint(this.cutoutActive ? this.cutoutAlpha : null)
+    if (clipTarget.blocked) {
+      this.emit.error(clipTarget.blocked)
+      return
+    }
     const stroke: Stroke = {
       tool: this.tool,
       color: this.color,
       size: Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5),
       opacity: this.opacity,
       points: [point],
+      clip: clipTarget.clip ?? undefined,
     }
     this.snapshotBackup()
     this.session = { mode: 'draw', pointerId: event.pointerId, stroke, prevBounds: null }
@@ -672,14 +792,17 @@ export class PaintSurface {
       return
     }
 
-    if (session.mode !== 'draw' && session.mode !== 'mask') return
+    if (session.mode === 'wand') return
+    if (session.mode !== 'draw' && session.mode !== 'mask' && session.mode !== 'lasso' && session.mode !== 'section-brush') {
+      return
+    }
 
     const samples = event.getCoalescedEvents?.() ?? [event]
     let added = false
     for (const sample of samples) {
       const point = this.toImage(sample.clientX, sample.clientY)
       if (!point) continue
-      const points = session.stroke.points
+      const points = session.mode === 'lasso' || session.mode === 'section-brush' ? session.points : session.stroke.points
       const last = points[points.length - 1]
       const dx = point.x - last.x
       const dy = point.y - last.y
@@ -699,6 +822,19 @@ export class PaintSurface {
     }
     if (session.mode === 'mask') {
       this.finishMask(session)
+      return
+    }
+    if (session.mode === 'lasso') {
+      this.finishLasso(session)
+      return
+    }
+    if (session.mode === 'section-brush') {
+      this.finishSectionBrush()
+      return
+    }
+    if (session.mode === 'wand') {
+      this.session = null
+      this.viewport.classList.remove('is-panning')
       return
     }
     if (session.mode === 'pick' && session.hex) this.emit.pick(session.hex, true)
@@ -742,6 +878,8 @@ export class PaintSurface {
       if (!session) return
       if (session.mode === 'draw') this.renderDraw(session)
       else if (session.mode === 'mask') this.renderMask(session)
+      else if (session.mode === 'section-brush') this.renderSectionBrush(session)
+      else if (session.mode === 'lasso') this.refreshOverlay(null, session.points)
     })
   }
 
@@ -830,6 +968,8 @@ export class PaintSurface {
     this.maskFuture = []
     this.timeline.push('mask')
     this.timelineFuture = []
+    this.sections.abandonRedo()
+    this.syncCutoutAlpha()
     if (!this.cutoutActive) {
       this.cutoutActive = true
       this.emitPhoto()
@@ -936,7 +1076,188 @@ export class PaintSurface {
     }
     this.presentPhoto(null)
     this.present(null)
+    this.syncCutoutAlpha()
     this.emitHistory()
+  }
+
+  private startSection(event: PointerEvent, point: Point): void {
+    if (this.tool === 'wand') {
+      const pixels = this.readSample()
+      this.session = { mode: 'wand', pointerId: event.pointerId }
+      this.capture(event)
+      if (!pixels) return
+      const result = this.sections.wand(pixels.data, point.x, point.y, this.tolerance, this.maskMode)
+      if (!result.ok) {
+        this.emit.error(result.reason)
+        this.refreshOverlay(null, null)
+        return
+      }
+      this.noteSectionEdit()
+      return
+    }
+
+    if (this.tool === 'lasso') {
+      this.session = { mode: 'lasso', pointerId: event.pointerId, points: [point], maskMode: this.maskMode }
+      this.refreshOverlay(null, [point])
+      this.capture(event)
+      return
+    }
+
+    const started = this.sections.beginPreview(this.maskMode)
+    if (!started.ok) {
+      this.emit.error(started.reason)
+      return
+    }
+    const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
+    this.session = {
+      mode: 'section-brush',
+      pointerId: event.pointerId,
+      points: [point],
+      size,
+      opacity: this.opacity,
+      prevBounds: null,
+    }
+    this.scheduleDraw()
+    this.capture(event)
+  }
+
+  private finishLasso(session: LassoSession): void {
+    if (this.raf) {
+      cancelAnimationFrame(this.raf)
+      this.raf = 0
+    }
+    const result = this.sections.lasso(session.points, session.maskMode)
+    this.session = null
+    this.viewport.classList.remove('is-panning')
+    if (!result.ok) {
+      this.emit.error(result.reason)
+      this.refreshOverlay(null, null)
+      return
+    }
+    this.noteSectionEdit()
+  }
+
+  private finishSectionBrush(): void {
+    if (this.raf) {
+      cancelAnimationFrame(this.raf)
+      this.raf = 0
+    }
+    const changed = this.sections.commitPreview()
+    this.session = null
+    this.viewport.classList.remove('is-panning')
+    if (changed) this.noteSectionEdit()
+    else this.refreshOverlay(null, null)
+  }
+
+  private renderSectionBrush(session: SectionBrushSession): void {
+    const stroke: Stroke = {
+      tool: 'brush',
+      color: '#ffffff',
+      size: session.size,
+      opacity: session.opacity,
+      points: session.points,
+    }
+    const next = strokeBounds(stroke)
+    if (!next) return
+    const bounds = clampBounds(next, this.sample.width, this.sample.height)
+    const region = session.prevBounds
+      ? clampBounds(unionBounds(session.prevBounds, bounds), this.sample.width, this.sample.height)
+      : bounds
+    this.sections.restorePreview(region)
+    const coverage = this.coverageAlpha(stroke, bounds)
+    if (coverage) {
+      this.sections.stampPreview(coverage.alpha, coverage.x, coverage.y, coverage.w, coverage.h)
+    }
+    this.refreshOverlay(region, null)
+    session.prevBounds = bounds
+  }
+
+  private coverageAlpha(stroke: Stroke, bounds: Bounds): { alpha: Uint8Array; x: number; y: number; w: number; h: number } | null {
+    const box = clampBounds(bounds, this.sample.width, this.sample.height)
+    if (box.w < 1 || box.h < 1) return null
+    this.work.width = box.w
+    this.work.height = box.h
+    const workCtx = context2d(this.work, { willReadFrequently: true })
+    if (!workCtx) return null
+    workCtx.setTransform(1, 0, 0, 1, 0, 0)
+    workCtx.clearRect(0, 0, box.w, box.h)
+    workCtx.save()
+    workCtx.translate(-box.x, -box.y)
+    paintStroke(workCtx, stroke)
+    workCtx.restore()
+    const pixels = workCtx.getImageData(0, 0, box.w, box.h).data
+    const alpha = new Uint8Array(box.w * box.h)
+    for (let i = 0; i < alpha.length; i += 1) alpha[i] = pixels[i * 4 + 3]
+    return { alpha, x: box.x, y: box.y, w: box.w, h: box.h }
+  }
+
+  private noteSectionEdit(): void {
+    this.timeline.push('section')
+    this.timelineFuture = []
+    while (this.sections.pastCount > MAX_SECTION_HISTORY) {
+      this.sections.dropOldest()
+      const index = this.timeline.indexOf('section')
+      if (index >= 0) this.timeline.splice(index, 1)
+    }
+    this.sections.invalidateOverlay()
+    this.refreshOverlay(null, null)
+    this.emitSections()
+    this.emitHistory()
+  }
+
+  private readSample(): ImageData | null {
+    if (!this.sampleCtx || this.sample.width < 1 || this.sample.height < 1) return null
+    try {
+      return this.sampleCtx.getImageData(0, 0, this.sample.width, this.sample.height)
+    } catch {
+      this.emit.error('Could not read the photo.')
+      return null
+    }
+  }
+
+  private syncCutoutAlpha(): void {
+    if (!this.cutoutActive || !this.sampleCtx || this.sample.width < 1) {
+      this.cutoutAlpha = null
+      return
+    }
+    try {
+      const pixels = this.sampleCtx.getImageData(0, 0, this.sample.width, this.sample.height).data
+      const alpha = new Uint8Array(this.sample.width * this.sample.height)
+      for (let i = 0; i < alpha.length; i += 1) alpha[i] = pixels[i * 4 + 3]
+      this.cutoutAlpha = alpha
+    } catch {
+      this.cutoutAlpha = null
+    }
+  }
+
+  private clearOverlay(): void {
+    this.overlayCtx?.clearRect(0, 0, this.overlay.width, this.overlay.height)
+  }
+
+  private refreshOverlay(area: Bounds | null, lasso: Point[] | null): void {
+    const ctx = this.overlayCtx
+    if (!ctx || this.overlay.width < 1) return
+    this.sections.renderOverlay(ctx, area)
+    if (!lasso || lasso.length === 0) return
+    ctx.save()
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.lineWidth = Math.max(2, Math.round(Math.max(this.overlay.width, this.overlay.height) / 420))
+    ctx.strokeStyle = '#fff8ea'
+    ctx.beginPath()
+    ctx.moveTo(lasso[0].x, lasso[0].y)
+    for (let i = 1; i < lasso.length; i += 1) ctx.lineTo(lasso[i].x, lasso[i].y)
+    ctx.stroke()
+    if (lasso.length > 2) {
+      ctx.setLineDash([8, 6])
+      ctx.lineTo(lasso[0].x, lasso[0].y)
+      ctx.stroke()
+    }
+    ctx.restore()
+  }
+
+  private emitSections(): void {
+    this.emit.sections(this.sections.list(), this.sections.activeId)
   }
 
   private clearDisplay(): void {
@@ -985,6 +1306,7 @@ export class PaintSurface {
     hist.future = []
     this.timeline.push('paint')
     this.timelineFuture = []
+    this.sections.abandonRedo()
     while (hist.actions.length > MAX_HISTORY) this.bakeOldest(hist)
   }
 

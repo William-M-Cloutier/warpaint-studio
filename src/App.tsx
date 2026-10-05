@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { CanvasStage, type StageHandle } from './components/CanvasStage'
 import { ColorPanel } from './components/ColorPanel'
 import { Dialog } from './components/Dialog'
+import { SectionPanel } from './components/SectionPanel'
 import { TopBar } from './components/TopBar'
 import { ToolStrip } from './components/ToolStrip'
 import { useSchemes } from './hooks/useSchemes'
@@ -9,7 +10,17 @@ import { useTheme } from './hooks/useTheme'
 import { createId, normalizeHex, rememberColor } from './lib/color'
 import { decodeImage, isImageFile, photoTooLarge } from './lib/imageFile'
 import { loadPrefs, savePrefs } from './lib/storage'
-import type { ColorScheme, HistoryState, LoadedPhoto, PhotoState, SchemeColor, Tool } from './types'
+import type {
+  ColorScheme,
+  HistoryState,
+  LoadedPhoto,
+  MaskMode,
+  PhotoState,
+  SchemeColor,
+  SectionCategory,
+  SectionInfo,
+  Tool,
+} from './types'
 
 // TODO(tutorial): an in-app tutorial comes near the end, after this workflow settles.
 
@@ -56,6 +67,11 @@ export function App() {
   const [cutoutActive, setCutoutActive] = useState(false)
   const [cutoutStrength, setCutoutStrength] = useState(34)
   const [cutoutBusy, setCutoutBusy] = useState(false)
+  const [sections, setSections] = useState<SectionInfo[]>([])
+  const [activeSectionId, setActiveSectionId] = useState<string | null>(null)
+  const [maskMode, setMaskMode] = useState<MaskMode>('new')
+  const [tolerance, setTolerance] = useState(32)
+  const [proposeBusy, setProposeBusy] = useState(false)
 
   const stageRef = useRef<StageHandle>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -90,6 +106,11 @@ export function App() {
   const onPhoto = useCallback((photo: PhotoState) => {
     setContentScale((current) => (current === photo.contentScale ? current : photo.contentScale))
     setCutoutActive((current) => (current === photo.cutoutActive ? current : photo.cutoutActive))
+  }, [])
+
+  const onSections = useCallback((list: SectionInfo[], activeId: string | null) => {
+    setSections(list)
+    setActiveSectionId(activeId)
   }, [])
 
   const onHistory = useCallback((next: HistoryState) => {
@@ -143,13 +164,13 @@ export function App() {
         flash('Choose a PNG, JPEG, WebP, or GIF photo.')
         return
       }
-      if (history.hasPaint) {
+      if (history.hasPaint || sections.length > 0) {
         setDialog({ type: 'replace', file })
         return
       }
       void loadFile(file)
     },
-    [flash, history.hasPaint, loadFile],
+    [flash, history.hasPaint, loadFile, sections.length],
   )
 
   const requestLoadRef = useRef(requestLoad)
@@ -237,6 +258,9 @@ export function App() {
       else if (key === 'h' || key === '4') setTool('pan')
       else if (key === 'r') setTool('restore')
       else if (key === 'x') setTool('eraseBackdrop')
+      else if (key === 'w') setTool('wand')
+      else if (key === 'l') setTool('lasso')
+      else if (key === 'm') setTool('maskBrush')
       else if (event.key === '[') setBrushSize((size) => clampSize(size - (event.shiftKey ? 10 : 2)))
       else if (event.key === ']') setBrushSize((size) => clampSize(size + (event.shiftKey ? 10 : 2)))
     }
@@ -314,6 +338,25 @@ export function App() {
     }, 80)
   }
   const replaceName = schemes.find((scheme) => scheme.name.toLowerCase() === draftName.trim().toLowerCase())
+  const activeSection = sections.find((section) => section.id === activeSectionId) ?? null
+  const sectionChip = activeSection
+    ? { name: activeSection.name.trim() || 'Untitled section', color: activeSection.color }
+    : null
+
+  const proposeSections = () => {
+    if (!image || proposeBusy) return
+    setProposeBusy(true)
+    window.setTimeout(() => {
+      const count = stageRef.current?.proposeSections() ?? 0
+      setProposeBusy(false)
+      if (count < 1) flash('No separate regions stood out. Trace one with the wand or lasso.')
+      else flash(`Added ${count} sections. Paint stays inside the active one.`)
+    }, 30)
+  }
+
+  const labelSection = (id: string, category: SectionCategory, customLabel: string) => {
+    stageRef.current?.labelSection(id, category, customLabel)
+  }
 
   return (
     <div className="app">
@@ -378,6 +421,9 @@ export function App() {
           brushSize={brushSize}
           opacity={opacity}
           spaceHeld={spaceHeld}
+          tolerance={tolerance}
+          maskMode={maskMode}
+          sectionChip={sectionChip}
           onPickColor={(hex, commit) => {
             setColor(hex)
             if (commit) remember(hex)
@@ -385,8 +431,29 @@ export function App() {
           onStroke={remember}
           onHistory={onHistory}
           onPhoto={onPhoto}
+          onSections={onSections}
           onError={flash}
           onBrowse={() => fileRef.current?.click()}
+        />
+        <div className="side-stack">
+        <SectionPanel
+          hasImage={image !== null}
+          tool={tool}
+          sections={sections}
+          activeId={activeSectionId}
+          maskMode={maskMode}
+          tolerance={tolerance}
+          proposeBusy={proposeBusy}
+          onTool={setTool}
+          onMaskMode={setMaskMode}
+          onTolerance={setTolerance}
+          onSelect={(id) => stageRef.current?.selectSection(id)}
+          onRename={(id, name) => stageRef.current?.renameSection(id, name)}
+          onCategory={labelSection}
+          onVisible={(id, visible) => stageRef.current?.setSectionVisible(id, visible)}
+          onLocked={(id, locked) => stageRef.current?.setSectionLocked(id, locked)}
+          onDelete={(id) => stageRef.current?.deleteSection(id)}
+          onPropose={proposeSections}
         />
         <ColorPanel
           color={color}
@@ -411,6 +478,7 @@ export function App() {
           onLoad={loadScheme}
           onAskDelete={(scheme) => setDialog({ type: 'delete', scheme })}
         />
+        </div>
       </div>
 
       <input
@@ -543,7 +611,7 @@ export function App() {
             </>
           }
         >
-          <p>The paint layer on this photo will be cleared. Saved color schemes stay.</p>
+          <p>The paint and sections on this photo will be cleared. Saved color schemes stay.</p>
         </Dialog>
       )}
     </div>

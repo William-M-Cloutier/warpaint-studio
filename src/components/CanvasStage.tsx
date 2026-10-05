@@ -1,6 +1,6 @@
 import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { PaintSurface, type CutoutResult, type ViewState } from '../lib/paintSurface'
-import type { HistoryState, LoadedPhoto, PhotoState, Tool } from '../types'
+import type { HistoryState, LoadedPhoto, MaskMode, PhotoState, SectionCategory, SectionInfo, Tool } from '../types'
 
 export type StageHandle = {
   undo: () => void
@@ -13,6 +13,13 @@ export type StageHandle = {
   repairCutout: () => void
   resetCutout: () => void
   setSpace: (held: boolean) => void
+  selectSection: (id: string | null) => void
+  renameSection: (id: string, name: string) => void
+  labelSection: (id: string, category: SectionCategory, customLabel: string) => void
+  setSectionVisible: (id: string, visible: boolean) => void
+  setSectionLocked: (id: string, locked: boolean) => void
+  deleteSection: (id: string) => void
+  proposeSections: () => number
 }
 
 type CanvasStageProps = {
@@ -22,22 +29,44 @@ type CanvasStageProps = {
   brushSize: number
   opacity: number
   spaceHeld: boolean
+  tolerance: number
+  maskMode: MaskMode
+  sectionChip: { name: string; color: string } | null
   onPickColor: (hex: string, commit: boolean) => void
   onStroke: (hex: string) => void
   onHistory: (history: HistoryState) => void
   onPhoto: (photo: PhotoState) => void
+  onSections: (sections: SectionInfo[], activeId: string | null) => void
   onError: (message: string) => void
   onBrowse: () => void
 }
 
 export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function CanvasStage(
-  { image, tool, color, brushSize, opacity, spaceHeld, onPickColor, onStroke, onHistory, onPhoto, onError, onBrowse },
+  {
+    image,
+    tool,
+    color,
+    brushSize,
+    opacity,
+    spaceHeld,
+    tolerance,
+    maskMode,
+    sectionChip,
+    onPickColor,
+    onStroke,
+    onHistory,
+    onPhoto,
+    onSections,
+    onError,
+    onBrowse,
+  },
   ref,
 ) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const photoRef = useRef<HTMLCanvasElement>(null)
   const paintRef = useRef<HTMLCanvasElement>(null)
   const previewRef = useRef<HTMLCanvasElement>(null)
+  const overlayRef = useRef<HTMLCanvasElement>(null)
   const ringRef = useRef<HTMLDivElement>(null)
   const surfaceRef = useRef<PaintSurface | null>(null)
   const [view, setView] = useState<ViewState>({ x: 0, y: 0, z: 1, contentScale: 1 })
@@ -46,28 +75,32 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
   const onStrokeRef = useRef(onStroke)
   const onHistoryRef = useRef(onHistory)
   const onPhotoRef = useRef(onPhoto)
+  const onSectionsRef = useRef(onSections)
   const onErrorRef = useRef(onError)
   onPickRef.current = onPickColor
   onStrokeRef.current = onStroke
   onHistoryRef.current = onHistory
   onPhotoRef.current = onPhoto
+  onSectionsRef.current = onSections
   onErrorRef.current = onError
 
-  const configRef = useRef({ tool, color, brushSize, opacity, space: spaceHeld })
-  configRef.current = { tool, color, brushSize, opacity, space: spaceHeld }
+  const configRef = useRef({ tool, color, brushSize, opacity, space: spaceHeld, tolerance, maskMode })
+  configRef.current = { tool, color, brushSize, opacity, space: spaceHeld, tolerance, maskMode }
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current
     const photo = photoRef.current
     const paint = paintRef.current
     const preview = previewRef.current
-    if (!viewport || !photo || !paint || !preview) return
-    const surface = new PaintSurface(photo, paint, preview, viewport, {
+    const overlay = overlayRef.current
+    if (!viewport || !photo || !paint || !preview || !overlay) return
+    const surface = new PaintSurface(photo, paint, preview, overlay, viewport, {
       view: setView,
       photo: (state) => onPhotoRef.current(state),
       history: (history) => onHistoryRef.current(history),
       pick: (hex, commit) => onPickRef.current(hex, commit),
       stroke: (hex) => onStrokeRef.current(hex),
+      sections: (sections, activeId) => onSectionsRef.current(sections, activeId),
       error: (message) => onErrorRef.current(message),
     })
     surfaceRef.current = surface
@@ -96,6 +129,14 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     repairCutout: () => surfaceRef.current?.repairMask(),
     resetCutout: () => surfaceRef.current?.resetCutout(),
     setSpace: (held: boolean) => surfaceRef.current?.setSpace(held),
+    selectSection: (id: string | null) => surfaceRef.current?.selectSection(id),
+    renameSection: (id: string, name: string) => surfaceRef.current?.renameSection(id, name),
+    labelSection: (id: string, category: SectionCategory, customLabel: string) =>
+      surfaceRef.current?.labelSection(id, category, customLabel),
+    setSectionVisible: (id: string, visible: boolean) => surfaceRef.current?.setSectionVisible(id, visible),
+    setSectionLocked: (id: string, locked: boolean) => surfaceRef.current?.setSectionLocked(id, locked),
+    deleteSection: (id: string) => surfaceRef.current?.deleteSection(id),
+    proposeSections: () => surfaceRef.current?.proposeSections() ?? 0,
   }))
 
   const zoomLabel = `${Math.round(view.z * 100)}%`
@@ -126,6 +167,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
         <canvas ref={photoRef} className="photo-layer" aria-hidden="true" />
         <canvas ref={paintRef} className="tint-store" aria-hidden="true" />
         <canvas ref={previewRef} className="display-layer" aria-hidden="true" />
+        <canvas ref={overlayRef} className="section-layer" aria-hidden="true" />
       </div>
 
       {!image && (
@@ -141,8 +183,22 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
 
       <div
         ref={ringRef}
-        className={tool === 'eraser' || tool === 'eraseBackdrop' ? 'cursor-ring is-eraser' : 'cursor-ring'}
+        className={
+          tool === 'eraser' || tool === 'eraseBackdrop' || (tool === 'maskBrush' && maskMode === 'subtract')
+            ? 'cursor-ring is-eraser'
+            : 'cursor-ring'
+        }
       />
+
+      {image && (
+        <div className={sectionChip ? 'section-chip is-clipped' : 'section-chip'} role="status">
+          <span
+            className={sectionChip ? 'section-badge' : 'section-badge is-whole'}
+            style={sectionChip ? { background: sectionChip.color } : undefined}
+          />
+          <span className="section-chip-label">{sectionChip ? `Inside ${sectionChip.name}` : 'Whole photo'}</span>
+        </div>
+      )}
 
       {image && (
         <button

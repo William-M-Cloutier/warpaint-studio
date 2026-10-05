@@ -1,9 +1,23 @@
+import { combineClipAlpha } from './sections'
+
 export type Point = {
   x: number
   y: number
 }
 
 export type StrokeTool = 'brush' | 'eraser'
+
+/**
+ * Mask captured when a stroke starts. Later section edits replace the mask
+ * array instead of writing into this one, so undo replays the original clip.
+ */
+export type StrokeClip = {
+  mask: Uint8Array
+  /** Photo alpha at stroke time, or null when no cutout is active. */
+  cutout: Uint8Array | null
+  width: number
+  height: number
+}
 
 export type Stroke = {
   tool: StrokeTool
@@ -12,6 +26,8 @@ export type Stroke = {
   size: number
   opacity: number
   points: Point[]
+  /** Set when an active section limited this stroke. */
+  clip?: StrokeClip
 }
 
 export type HistoryAction = { kind: 'stroke'; stroke: Stroke } | { kind: 'clear' }
@@ -107,6 +123,14 @@ function traceSmooth(ctx: CanvasRenderingContext2D, points: readonly Point[]): v
 
 /** Draw one finished stroke. A full path (not overlapping dabs) keeps opacity even. */
 export function paintStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void {
+  if (stroke.clip) {
+    paintClippedStroke(ctx, stroke)
+    return
+  }
+  paintUnclippedStroke(ctx, stroke)
+}
+
+function paintUnclippedStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void {
   if (stroke.points.length === 0 || stroke.size <= 0 || stroke.opacity <= 0) return
   ctx.save()
   ctx.lineCap = 'round'
@@ -132,4 +156,52 @@ export function paintStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void
     ctx.stroke()
   }
   ctx.restore()
+}
+
+/**
+ * Paint the stroke into a stamp, then keep only the pixels inside the section
+ * mask (and the cutout, when that stamp was captured). The stamp is drawn
+ * back with source-over or destination-out so existing paint outside the
+ * section is left alone.
+ */
+function paintClippedStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void {
+  const clip = stroke.clip
+  if (!clip || stroke.points.length === 0 || stroke.size <= 0 || stroke.opacity <= 0) return
+  const bounds = strokeBounds(stroke)
+  if (!bounds) return
+  const region = clampBounds(bounds, clip.width, clip.height)
+  if (region.w < 1 || region.h < 1) return
+  const stamp = stampContext(region.w, region.h)
+  if (!stamp) return
+  stamp.setTransform(1, 0, 0, 1, 0, 0)
+  stamp.clearRect(0, 0, region.w, region.h)
+  stamp.save()
+  stamp.translate(-region.x, -region.y)
+  paintUnclippedStroke(stamp, stroke.tool === 'eraser' ? { ...stroke, tool: 'brush' } : stroke)
+  stamp.restore()
+  const image = stamp.getImageData(0, 0, region.w, region.h)
+  combineClipAlpha(image.data, region.w, region.x, region.y, clip.width, clip.height, clip.mask, clip.cutout)
+  stamp.putImageData(image, 0, 0)
+  ctx.save()
+  ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over'
+  ctx.imageSmoothingEnabled = false
+  ctx.drawImage(stamp.canvas, 0, 0, region.w, region.h, region.x, region.y, region.w, region.h)
+  ctx.restore()
+}
+
+let stampCanvas: HTMLCanvasElement | null = null
+let stampCtx: CanvasRenderingContext2D | null = null
+
+function stampContext(width: number, height: number): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null
+  if (!stampCanvas) {
+    stampCanvas = document.createElement('canvas')
+    stampCtx = stampCanvas.getContext('2d', { willReadFrequently: true })
+  }
+  if (!stampCtx || !stampCanvas) return null
+  if (stampCanvas.width < width || stampCanvas.height < height) {
+    stampCanvas.width = width
+    stampCanvas.height = height
+  }
+  return stampCtx
 }

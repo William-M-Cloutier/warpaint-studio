@@ -27,7 +27,8 @@ Node 20 or newer.
 - **Photo scale** resizes the uploaded picture. The slider and percent sit in the left tool strip, labeled **Photo scale**. **Auto** (or Shift+0) fits that picture in the canvas without stretching either side, then frames the view. It also runs when a photo is uploaded.
 - **View zoom** is separate. **Pan** (H, Space, or the middle mouse button), scroll, the **View %** chip, and **Fit view** (or 0, including the top bar) move the canvas around the picture. They do not change photo scale. Brush size stays in screen pixels.
 - **Remove backdrop** cuts the table or desk out in the browser, including white gaps enclosed by the miniature. Nothing is uploaded. It then fills small holes in the figure and trims the white rim. **Cutout strength** widens how close a pixel must be to that backdrop color. **Repair cutout** runs the hole fill and rim trim again. **Restore photo** (R) paints the original picture back, and **Erase backdrop** (X) forces transparency. Both use Size and Opacity, and both undo. **Reset cutout** restores the original photo. The viewport checkerboard shows through the transparent pixels. Paint still tints by the photo's light and shadow, and only where the miniature remains.
-- **Undo** and **redo** apply to paint strokes and to the restore and erase-backdrop brushes. **Clear paint** wipes the paint layer and can itself be undone. They do not undo uploads, photo scale, Remove backdrop, theme, or saved schemes.
+- **Sections** keep a brush or eraser inside one region (a shoulder pad, a shield, a plate). Pick **Wand** (W) and click a similar area, draw a **Lasso** (L), or paint the mask with **Mask** (M). **New** makes a section. **Add** and **Subtract** change the active one. **Tolerance** widens the wand. The list shows a color badge, a name, and a label: armour plates, trim, undersuit/joints, details, or your own text. The eye hides the highlight. The lock blocks paint and mask edits. Delete can be undone. **Suggest regions** proposes a few areas from the photo’s edges when the split is clear. With **Whole photo** selected, the brush paints everywhere, as before. The chip on the canvas names the active section, and its mask is drawn over the photo. A section also stays off any backdrop the cutout has already cleared. Sections belong to the current photo and are cleared with it.
+- **Undo** and **redo** apply to paint strokes, to the restore and erase-backdrop brushes, and to section mask edits (wand, lasso, mask brush, suggest, and delete). **Clear paint** wipes the paint layer and can itself be undone. They do not undo uploads, photo scale, Remove backdrop, rename, labels, theme, or saved schemes.
 - The right panel holds the current color, recent swatches, a working palette, and named schemes. **Save scheme** stores the palette in this browser (`localStorage`). If the palette is empty, the save uses the current color and recent swatches.
 - The app opens in a **dark** theme. The sun/moon control in the top bar switches to light. The choice is remembered.
 
@@ -43,6 +44,9 @@ Photos stay in memory for the session. A new photo replaces the current one. If 
 | H or 4 | Pan |
 | R | Restore photo |
 | X | Erase backdrop |
+| W | Magic wand (new, add, or subtract a section) |
+| L | Lasso |
+| M | Mask brush |
 | Space (hold) | Pan |
 | Scroll | View zoom toward the pointer (not photo scale) |
 | [ and ] | Brush size (Shift for larger steps) |
@@ -55,10 +59,12 @@ Photos stay in memory for the session. A new photo replaces the current one. If 
 
 - `src/App.tsx` — shell, upload, theme, and scheme actions
 - `src/components/` — top bar, tool strip, canvas, color panel
-- `src/lib/paintSurface.ts` — photo scale, cutout, view pan/zoom, and the paint canvas
+- `src/lib/paintSurface.ts` — photo scale, cutout, sections, view pan/zoom, and the paint canvas
 - `src/lib/photoScale.ts` — photo scale limits and fit math
 - `src/lib/cutout.ts` — offline backdrop removal
-- `src/lib/paint.ts` — stroke drawing and undo projection
+- `src/lib/sections.ts` — wand, lasso, and region proposal
+- `src/lib/sectionLayer.ts` — section list, masks, and mask undo
+- `src/lib/paint.ts` — stroke drawing, section clipping, and undo projection
 - `src/lib/tint.ts` — luminance shading of the paint coat
 - `src/roadmap.ts` — features that are listed and **not** built yet
 
@@ -69,9 +75,8 @@ Theme colors are CSS variables on `:root` (dark) and `:root[data-theme="light"]`
 These are tracked in `src/roadmap.ts` and called out with `TODO(...)` comments next to the code they would extend. They are **not** implemented:
 
 - Custom viewing backgrounds after a cutout
-- Edge and section layers with editable regions
+- Soft edge snap (a separate mode that pulls strokes toward photo edges)
 - Suggested paints and highlights from a base color
-- Part categories: armour plates, trim, undersuit/joints, details, and custom labels per model
 - A major paint catalog (Citadel and others) with quality and comparison notes
 - Lighting presets
 - Paint mix by ratio

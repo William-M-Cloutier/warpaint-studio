@@ -110,3 +110,40 @@ export function IconPlus() {
     </Glyph>
   )
 }
+
+export function IconEye() {
+  return (
+    <Glyph>
+      <path d="M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12z" />
+      <circle cx="12" cy="12" r="2.2" />
+    </Glyph>
+  )
+}
+
+export function IconEyeOff() {
+  return (
+    <Glyph>
+      <path d="M4 5.5 19.5 19" />
+      <path d="M9.2 6.8A10 10 0 0 1 12 6.5c6 0 9.5 5.5 9.5 5.5a16 16 0 0 1-3.2 3.6" />
+      <path d="M6.2 8.2A16 16 0 0 0 2.5 12S6 17.5 12 17.5a9 9 0 0 0 3.2-.6" />
+    </Glyph>
+  )
+}
+
+export function IconLock() {
+  return (
+    <Glyph>
+      <rect x="6" y="10.5" width="12" height="8.5" rx="1.5" />
+      <path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" />
+    </Glyph>
+  )
+}
+
+export function IconUnlock() {
+  return (
+    <Glyph>
+      <rect x="6" y="10.5" width="12" height="8.5" rx="1.5" />
+      <path d="M8.5 10.5V8a3.5 3.5 0 0 1 6.6-1.6" />
+    </Glyph>
+  )
+}
