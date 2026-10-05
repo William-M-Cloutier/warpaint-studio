@@ -21,7 +21,9 @@ Node 20 or newer.
 ## What you can do
 
 - Drop a photo on the window, or use **Upload** (one image at a time).
-- **Brush**, **eraser**, and **eyedropper** paint a layer above the photo. The photo pixels are not edited.
+- **Brush** lays down a tint, not a flat cover. The coat is shaded by the photo, so edges, highlights, and recesses stay visible. The same red is brighter on a lit surface and darker in a shadow. **Opacity** is how strong that tint is. The photo pixels are not edited.
+- **Eraser** removes the tint and restores the original photo in that spot.
+- **Eyedropper** on a painted spot picks the pigment you brushed (the swatch), not the lighter or darker shade created by the photo's lighting. On an unpainted spot it picks the photo color. Painting with that swatch again lays the same coat back down; the picture still supplies the light and shadow.
 - **Pan** (or hold Space, or use the middle mouse button) and scroll to zoom. **Fit to view** recenters the photo.
 - Brush **size** and **opacity** sit in the left tool strip. Size is in screen pixels, so it stays steady while you zoom.
 - **Undo** and **redo** apply to paint strokes. **Clear paint** wipes the layer and can itself be undone. They do not undo uploads, theme, or saved schemes.

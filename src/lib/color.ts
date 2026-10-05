@@ -20,18 +20,6 @@ export function rgbToHex(r: number, g: number, b: number): string {
   return `#${channel(r)}${channel(g)}${channel(b)}`
 }
 
-/**
- * Composite a straight-alpha paint pixel over an opaque photo pixel.
- * Canvas getImageData uses straight alpha, so the paint RGB is the stroke color.
- */
-export function compositeHex(paint: Uint8ClampedArray, base: Uint8ClampedArray): string {
-  const alpha = paint[3] / 255
-  if (alpha <= 0.02) return rgbToHex(base[0], base[1], base[2])
-  const blend = (paintChannel: number, baseChannel: number) =>
-    paintChannel * alpha + baseChannel * (1 - alpha)
-  return rgbToHex(blend(paint[0], base[0]), blend(paint[1], base[1]), blend(paint[2], base[2]))
-}
-
 export function displayHex(hex: string): string {
   return hex.toUpperCase()
 }

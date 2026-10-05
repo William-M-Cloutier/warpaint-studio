@@ -290,7 +290,7 @@ textarea { user-select: text; }
 
 .viewport[data-tool="brush"]:not([data-space="true"]):not(.is-panning),
 .viewport[data-tool="eraser"]:not([data-space="true"]):not(.is-panning) {
-  cursor: none;
+  cursor: crosshair;
 }
 
 .viewport[data-tool="pan"],
@@ -324,8 +324,10 @@ textarea { user-select: text; }
   -webkit-user-drag: none;
 }
 
-.paint-layer { z-index: 1; }
-.preview-layer { z-index: 2; }
+/* Pigment coverage only. The visible coat is composited onto .display-layer. */
+.tint-store { visibility: hidden; }
+
+.display-layer { z-index: 2; }
 
 .cursor-ring {
   position: absolute;
