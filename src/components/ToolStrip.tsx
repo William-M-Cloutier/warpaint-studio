@@ -187,7 +187,7 @@ export function ToolStrip({
         <p className="tool-note">
           {cutoutActive
             ? 'Drag to tune. Reset restores the photo. Paint stays on the miniature.'
-            : 'Clears the table from the edges. Paint still tints only the mini.'}
+            : 'Clears the backdrop and white gaps. Grey plastic stays. Paint tints only the mini.'}
         </p>
         <button
           type="button"

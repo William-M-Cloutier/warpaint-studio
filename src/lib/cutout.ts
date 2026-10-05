@@ -1,7 +1,10 @@
 /**
- * Offline backdrop removal. Flood-fills from the image edges where the color
- * stays near the corner backdrop, then writes transparency into the alpha channel.
- * No network and no model — it runs on pixel buffers in the browser.
+ * Offline backdrop removal. Seeds only from the image border, and only pixels
+ * that still match that backdrop color can be cleared. Grey plastic — including
+ * bright highlights and thin spikes — stays, because it is farther from the
+ * backdrop than the strength slider allows, or it sits against a darker part of
+ * the miniature. White pockets enclosed by the figure (between legs, under an
+ * arm) are cleared in a second pass. No network and no model.
  */
 
 export type RgbaBuffer = {
@@ -15,16 +18,37 @@ export type CutoutStats = {
   removedRatio: number
 }
 
-type RGB = { r: number; g: number; b: number }
+type RGB = { r: number; g: number; b: number; luma: number }
 
-const CLUSTER_DISTANCE = 48
+type Limits = {
+  tol: number
+  fringeTol: number
+  slack: number
+  contrast: number
+  strong: number
+}
+
+const LUMA_WINDOW = 26
+const POCKET_MIN = 6
 
 export function clampCutoutStrength(value: number): number {
   if (!Number.isFinite(value)) return 34
   return Math.min(100, Math.max(1, Math.round(value)))
 }
 
-/** Weighted color distance squared. Green counts more than red or blue. */
+function limitsFor(level: number): Limits {
+  return {
+    // Strength 100 stays near the backdrop (about 16 levels on a grey ramp).
+    tol: 6 + level * 0.16,
+    // Only a near-white fringe may be peeled off the silhouette.
+    fringeTol: 3.5 + level * 0.045,
+    slack: 10 + level * 0.2,
+    contrast: 28,
+    strong: 46,
+  }
+}
+
+/** Weighted color distance. Green counts more than red or blue. */
 function colorDist2(r1: number, g1: number, b1: number, r2: number, g2: number, b2: number): number {
   const dr = r1 - r2
   const dg = g1 - g2
@@ -32,63 +56,34 @@ function colorDist2(r1: number, g1: number, b1: number, r2: number, g2: number, 
   return dr * dr * 0.5 + dg * dg + db * db * 0.4
 }
 
-function weightedDist(a: RGB, b: RGB): number {
-  return Math.sqrt(colorDist2(a.r, a.g, a.b, b.r, b.g, b.b))
+function weightedDist(r: number, g: number, b: number, ref: RGB): number {
+  return Math.sqrt(colorDist2(r, g, b, ref.r, ref.g, ref.b))
 }
 
-function average(colors: readonly RGB[]): RGB {
-  let r = 0
-  let g = 0
-  let b = 0
-  for (const color of colors) {
-    r += color.r
-    g += color.g
-    b += color.b
-  }
-  const n = colors.length || 1
-  return { r: r / n, g: g / n, b: b / n }
+function lumaOf(r: number, g: number, b: number): number {
+  return r * 0.299 + g * 0.587 + b * 0.114
 }
 
-function dedupeReferences(colors: readonly RGB[]): RGB[] {
-  const groups: RGB[][] = []
-  for (const color of colors) {
-    const group = groups.find((entry) => weightedDist(entry[0], color) <= CLUSTER_DISTANCE)
-    if (group) group.push(color)
-    else groups.push([color])
-  }
-  return groups.map((group) => average(group))
-}
-
-/**
- * Corner colors that agree with each other are the backdrop.
- * A single corner that disagrees (the miniature touching that corner) is dropped.
- */
-function backdropReferences(corners: readonly RGB[]): RGB[] {
-  if (corners.length === 0) return [{ r: 255, g: 255, b: 255 }]
-  const close = (a: RGB, b: RGB) => weightedDist(a, b) <= CLUSTER_DISTANCE
-  const clustered = corners.filter((color, index) =>
-    corners.some((other, otherIndex) => otherIndex !== index && close(color, other)),
-  )
-  const chosen = clustered.length >= 2 ? clustered : corners
-  return dedupeReferences(chosen)
-}
-
-function patchAverage(
+function averagePatch(
   data: Uint8ClampedArray,
   width: number,
   height: number,
   x0: number,
+  x1: number,
   y0: number,
-  size: number,
-): RGB {
-  const x1 = Math.min(width, x0 + size)
-  const y1 = Math.min(height, y0 + size)
+  y1: number,
+): RGB | null {
+  if (x1 <= x0 || y1 <= y0) return null
+  const xLo = Math.max(0, x0)
+  const yLo = Math.max(0, y0)
+  const xHi = Math.min(width, x1)
+  const yHi = Math.min(height, y1)
   let r = 0
   let g = 0
   let b = 0
   let n = 0
-  for (let y = y0; y < y1; y += 1) {
-    for (let x = x0; x < x1; x += 1) {
+  for (let y = yLo; y < yHi; y += 1) {
+    for (let x = xLo; x < xHi; x += 1) {
       const i = (y * width + x) * 4
       if (data[i + 3] < 16) continue
       r += data[i]
@@ -97,24 +92,142 @@ function patchAverage(
       n += 1
     }
   }
-  if (n === 0) return { r: 0, g: 0, b: 0 }
-  return { r: r / n, g: g / n, b: b / n }
-}
-
-function cornerColors(buffer: RgbaBuffer): RGB[] {
-  const { data, width, height } = buffer
-  const size = Math.max(2, Math.min(6, Math.floor(Math.min(width, height) / 8)))
-  return [
-    patchAverage(data, width, height, 0, 0, size),
-    patchAverage(data, width, height, width - size, 0, size),
-    patchAverage(data, width, height, 0, height - size, size),
-    patchAverage(data, width, height, width - size, height - size, size),
-  ]
+  if (n === 0) return null
+  return { r: r / n, g: g / n, b: b / n, luma: lumaOf(r / n, g / n, b / n) }
 }
 
 /**
- * Remove the backdrop connected to the image edges.
- * Mutates `buffer` alpha and leaves RGB in place. Higher strength removes more.
+ * One sample per border segment. Segments whose lightness is far from the
+ * border median are the miniature touching the frame, not the backdrop.
+ */
+function borderReferences(buffer: RgbaBuffer): RGB[] {
+  const { data, width, height } = buffer
+  const buckets = 4
+  const samples: RGB[] = []
+  const add = (x0: number, x1: number, y0: number, y1: number) => {
+    const sample = averagePatch(data, width, height, x0, x1, y0, y1)
+    if (sample) samples.push(sample)
+  }
+  for (let bucket = 0; bucket < buckets; bucket += 1) {
+    const x0 = Math.floor((bucket * width) / buckets)
+    const x1 = Math.floor(((bucket + 1) * width) / buckets)
+    add(x0, x1, 0, 1)
+    if (height > 1) add(x0, x1, height - 1, height)
+    const y0 = Math.floor((bucket * height) / buckets)
+    const y1 = Math.floor(((bucket + 1) * height) / buckets)
+    add(0, 1, y0, y1)
+    if (width > 1) add(width - 1, width, y0, y1)
+  }
+  if (samples.length === 0) return [{ r: 255, g: 255, b: 255, luma: 255 }]
+  const lumas = samples.map((sample) => sample.luma).sort((a, b) => a - b)
+  const median = lumas[lumas.length >> 1]
+  const kept = samples.filter((sample) => Math.abs(sample.luma - median) <= LUMA_WINDOW)
+  return kept.length > 0 ? kept : samples
+}
+
+function nearestBackdrop(
+  r: number,
+  g: number,
+  b: number,
+  refs: readonly RGB[],
+): { dist: number; refLuma: number } {
+  let dist = Number.POSITIVE_INFINITY
+  let refLuma = 255
+  for (const ref of refs) {
+    const next = weightedDist(r, g, b, ref)
+    if (next < dist) {
+      dist = next
+      refLuma = ref.luma
+    }
+  }
+  return { dist, refLuma }
+}
+
+function matchesBackdrop(dist: number, luma: number, refLuma: number, limits: Limits): boolean {
+  return dist <= limits.tol && luma >= refLuma - limits.slack
+}
+
+/**
+ * A bright pixel glued to much darker plastic is a highlight or a spike, not
+ * the backdrop. Near-white fringe (a few levels from the backdrop) still peels
+ * so the silhouette does not keep a white outline.
+ */
+function attachedToFigure(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  luma: number,
+  dist: number,
+  limits: Limits,
+): boolean {
+  if (dist <= limits.fringeTol) return false
+  let darker = 0
+  let strong = false
+  for (let dy = -1; dy <= 1; dy += 1) {
+    for (let dx = -1; dx <= 1; dx += 1) {
+      if (dx === 0 && dy === 0) continue
+      const nx = x + dx
+      const ny = y + dy
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
+      const j = (ny * width + nx) * 4
+      if (data[j + 3] < 16) continue
+      const gap = luma - lumaOf(data[j], data[j + 1], data[j + 2])
+      if (gap < limits.contrast) continue
+      darker += 1
+      if (gap >= limits.strong) strong = true
+    }
+  }
+  return strong || darker >= 3
+}
+
+function thinAgainstBackdrop(
+  luma: Float32Array,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+): boolean {
+  const here = luma[y * width + x]
+  let brighter = 0
+  for (let dy = -1; dy <= 1; dy += 1) {
+    for (let dx = -1; dx <= 1; dx += 1) {
+      if (dx === 0 && dy === 0) continue
+      const nx = x + dx
+      const ny = y + dy
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
+      if (luma[ny * width + nx] >= here + 8) brighter += 1
+    }
+  }
+  return brighter >= 2
+}
+
+function removedRatio(data: Uint8ClampedArray, remove: Uint8Array): number {
+  let opaque = 0
+  let removed = 0
+  const count = remove.length
+  for (let i = 0; i < count; i += 1) {
+    if (data[i * 4 + 3] < 16) continue
+    opaque += 1
+    if (remove[i]) removed += 1
+  }
+  return opaque === 0 ? 0 : removed / opaque
+}
+
+function writeAlpha(data: Uint8ClampedArray, remove: Uint8Array): void {
+  const count = remove.length
+  for (let i = 0; i < count; i += 1) {
+    if (!remove[i]) continue
+    if (data[i * 4 + 3] < 16) continue
+    data[i * 4 + 3] = 0
+  }
+}
+
+/**
+ * Remove the backdrop. Mutates `buffer` alpha and leaves RGB in place.
+ * Higher strength accepts pixels farther from the backdrop color. It does not
+ * walk from white into mid-grey.
  */
 export function removeBackdrop(buffer: RgbaBuffer, strength: number): CutoutStats {
   const level = clampCutoutStrength(strength)
@@ -122,111 +235,261 @@ export function removeBackdrop(buffer: RgbaBuffer, strength: number): CutoutStat
   const count = width * height
   if (count === 0) return { removedRatio: 0 }
 
-  const tol = 5 + level * 0.58
-  const tol2 = tol * tol
-  const step2 = (tol * 0.92) * (tol * 0.92)
-  const loose2 = (tol * 2.55) * (tol * 2.55)
-  const seedGate2 = (tol * 1.4) * (tol * 1.4)
-  const refs = backdropReferences(cornerColors(buffer))
+  const limits = limitsFor(level)
+  const refs = borderReferences(buffer)
+  const eligible = new Uint8Array(count)
+  const protect = new Uint8Array(count)
+  const dist = new Float32Array(count)
+  const luma = new Float32Array(count)
 
-  const nearRef = (r: number, g: number, b: number, gate: number) => {
-    for (const ref of refs) {
-      if (colorDist2(r, g, b, ref.r, ref.g, ref.b) <= gate) return true
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x
+      const offset = index * 4
+      if (data[offset + 3] < 16) continue
+      const r = data[offset]
+      const g = data[offset + 1]
+      const b = data[offset + 2]
+      const here = lumaOf(r, g, b)
+      luma[index] = here
+      const nearest = nearestBackdrop(r, g, b, refs)
+      dist[index] = nearest.dist
+      if (!matchesBackdrop(nearest.dist, here, nearest.refLuma, limits)) continue
+      eligible[index] = 1
+      if (attachedToFigure(data, width, height, x, y, here, nearest.dist, limits)) {
+        protect[index] = 1
+      }
     }
-    return false
   }
 
-  const remove = new Uint8Array(count)
-  const qx = new Int32Array(count)
-  const qy = new Int32Array(count)
-  const qsr = new Uint8ClampedArray(count)
-  const qsg = new Uint8ClampedArray(count)
-  const qsb = new Uint8ClampedArray(count)
-  let qe = 0
-
-  const enqueue = (x: number, y: number, sr: number, sg: number, sb: number) => {
-    const index = y * width + x
-    if (remove[index]) return
-    remove[index] = 1
-    qx[qe] = x
-    qy[qe] = y
-    qsr[qe] = sr
-    qsg[qe] = sg
-    qsb[qe] = sb
-    qe += 1
+  // Extend protection along thin bright details (halo spikes, hammer edges) so
+  // the flood cannot eat them from the white side. Flat pockets are not thin:
+  // their pixels sit next to similar colors, not the brighter backdrop.
+  const grow = new Int32Array(count)
+  let growHead = 0
+  let growTail = 0
+  for (let index = 0; index < count; index += 1) {
+    if (!protect[index]) continue
+    grow[growTail] = index
+    growTail += 1
+  }
+  const shieldThin = (index: number) => {
+    if (!eligible[index] || protect[index] || dist[index] <= limits.fringeTol) return false
+    protect[index] = 1
+    grow[growTail] = index
+    growTail += 1
+    return true
   }
 
-  const considerBorder = (x: number, y: number) => {
-    const j = (y * width + x) * 4
-    if (data[j + 3] < 16) {
-      remove[y * width + x] = 1
-      return
-    }
-    const r = data[j]
-    const g = data[j + 1]
-    const b = data[j + 2]
-    if (nearRef(r, g, b, seedGate2)) enqueue(x, y, r, g, b)
-  }
-
-  for (let x = 0; x < width; x += 1) {
-    considerBorder(x, 0)
-    if (height > 1) considerBorder(x, height - 1)
-  }
-  for (let y = 1; y < height - 1; y += 1) {
-    considerBorder(0, y)
-    if (width > 1) considerBorder(width - 1, y)
-  }
-
-  let qs = 0
-  while (qs < qe) {
-    const x = qx[qs]
-    const y = qy[qs]
-    const sr = qsr[qs]
-    const sg = qsg[qs]
-    const sb = qsb[qs]
-    qs += 1
-    const parent = (y * width + x) * 4
-    const pr = data[parent]
-    const pg = data[parent + 1]
-    const pb = data[parent + 2]
-
+  while (growHead < growTail) {
+    const current = grow[growHead]
+    growHead += 1
+    const x = current % width
+    const y = (current - x) / width
     for (let dy = -1; dy <= 1; dy += 1) {
       for (let dx = -1; dx <= 1; dx += 1) {
         if (dx === 0 && dy === 0) continue
         const nx = x + dx
         const ny = y + dy
         if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
-        const ni = ny * width + nx
-        if (remove[ni]) continue
-        const j = ni * 4
-        if (data[j + 3] < 16) {
-          remove[ni] = 1
-          continue
-        }
-        const r = data[j]
-        const g = data[j + 1]
-        const b = data[j + 2]
-        const fromSeed = colorDist2(r, g, b, sr, sg, sb)
-        const fromParent = colorDist2(r, g, b, pr, pg, pb)
-        if (fromSeed <= tol2 || (fromParent <= step2 && fromSeed <= loose2)) {
-          enqueue(nx, ny, sr, sg, sb)
-        }
+        const next = ny * width + nx
+        if (!eligible[next] || protect[next] || dist[next] <= limits.fringeTol) continue
+        if (!thinAgainstBackdrop(luma, width, height, nx, ny)) continue
+        shieldThin(next)
       }
     }
   }
 
-  let opaque = 0
-  let removed = 0
-  for (let i = 0; i < count; i += 1) {
-    const offset = i * 4 + 3
-    const previous = data[offset]
-    if (previous < 16) continue
-    opaque += 1
-    if (remove[i]) {
-      data[offset] = 0
-      removed += 1
+  // The middle of a spike is not itself against the backdrop. Keep a pixel
+  // when both sides are already part of that highlight. A flat pocket has no
+  // protected sides, so it still clears.
+  for (let pass = 0; pass < 3; pass += 1) {
+    let grew = false
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = y * width + x
+        if (!eligible[index] || protect[index] || dist[index] <= limits.fringeTol) continue
+        const left = x > 0 && protect[index - 1]
+        const right = x + 1 < width && protect[index + 1]
+        const up = y > 0 && protect[index - width]
+        const down = y + 1 < height && protect[index + width]
+        if ((left && right) || (up && down)) {
+          protect[index] = 1
+          grew = true
+        }
+      }
+    }
+    if (!grew) break
+  }
+
+  const remove = new Uint8Array(count)
+  const queue = new Int32Array(count)
+  let head = 0
+  let tail = 0
+  const enqueue = (index: number) => {
+    if (remove[index] || !eligible[index] || protect[index]) return
+    remove[index] = 1
+    queue[tail] = index
+    tail += 1
+  }
+
+  for (let x = 0; x < width; x += 1) {
+    enqueue(x)
+    if (height > 1) enqueue((height - 1) * width + x)
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    enqueue(y * width)
+    if (width > 1) enqueue(y * width + width - 1)
+  }
+
+  const neighbors = [
+    [-1, 0],
+    [1, 0],
+    [0, -1],
+    [0, 1],
+  ] as const
+
+  while (head < tail) {
+    const index = queue[head]
+    head += 1
+    const x = index % width
+    const y = (index - x) / width
+    for (const [dx, dy] of neighbors) {
+      const nx = x + dx
+      const ny = y + dy
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
+      enqueue(ny * width + nx)
     }
   }
 
-  return { removedRatio: opaque === 0 ? 0 : removed / opaque }
+  // Enclosed and near-enclosed backdrop pockets: white between legs, under an
+  // arm, behind a shield. They are not connected to the frame, so the flood
+  // never reaches them. Highlights glued to darker plastic are protected and
+  // are not part of these components.
+  const seen = new Uint8Array(count)
+  const members = new Int32Array(count)
+  for (let index = 0; index < count; index += 1) {
+    if (seen[index] || remove[index] || !eligible[index] || protect[index]) continue
+    let memberCount = 0
+    let touchesBorder = false
+    let scan = 0
+    seen[index] = 1
+    members[memberCount] = index
+    memberCount += 1
+    while (scan < memberCount) {
+      const current = members[scan]
+      scan += 1
+      const x = current % width
+      const y = (current - x) / width
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) touchesBorder = true
+      for (const [dx, dy] of neighbors) {
+        const nx = x + dx
+        const ny = y + dy
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
+        const next = ny * width + nx
+        if (seen[next] || remove[next] || !eligible[next] || protect[next]) continue
+        seen[next] = 1
+        members[memberCount] = next
+        memberCount += 1
+      }
+    }
+    if (touchesBorder || memberCount < POCKET_MIN) continue
+    for (let k = 0; k < memberCount; k += 1) remove[members[k]] = 1
+  }
+
+  // Drop leftover near-white crumbs surrounded by cleared backdrop.
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const index = y * width + x
+      if (remove[index] || !eligible[index] || protect[index]) continue
+      if (dist[index] > limits.fringeTol) continue
+      let cleared = 0
+      for (const [dx, dy] of neighbors) {
+        if (remove[(y + dy) * width + (x + dx)]) cleared += 1
+      }
+      if (cleared >= 3) remove[index] = 1
+    }
+  }
+
+  // Never punch a pixel the color test rejected.
+  for (let index = 0; index < count; index += 1) {
+    if (remove[index] && !eligible[index]) remove[index] = 0
+  }
+
+  const ratio = removedRatio(data, remove)
+  writeAlpha(data, remove)
+  return { removedRatio: ratio }
+}
+
+/**
+ * Apply a coarse cutout to a full-resolution buffer. A pixel is cleared only
+ * when the coarse mask cleared its cell and the full pixel itself still matches
+ * the backdrop and is not a highlight attached to the figure. Nearest-neighbor
+ * downscales can mark grey plastic as removed; this puts those pixels back.
+ */
+export function projectCutout(full: RgbaBuffer, coarse: RgbaBuffer, strength: number): CutoutStats {
+  const level = clampCutoutStrength(strength)
+  const limits = limitsFor(level)
+  const refs = borderReferences(full)
+  const { data, width, height } = full
+  const count = width * height
+  const remove = new Uint8Array(count)
+  const coarseData = coarse.data
+  const coarseW = coarse.width
+  const coarseH = coarse.height
+  if (count === 0 || coarseW < 1 || coarseH < 1) return { removedRatio: 0 }
+
+  for (let y = 0; y < height; y += 1) {
+    const cy = Math.min(coarseH - 1, Math.floor((y * coarseH) / height))
+    for (let x = 0; x < width; x += 1) {
+      const cx = Math.min(coarseW - 1, Math.floor((x * coarseW) / width))
+      if (coarseData[(cy * coarseW + cx) * 4 + 3] !== 0) continue
+      const index = y * width + x
+      const offset = index * 4
+      if (data[offset + 3] < 16) continue
+      const r = data[offset]
+      const g = data[offset + 1]
+      const b = data[offset + 2]
+      const nearest = nearestBackdrop(r, g, b, refs)
+      const luma = lumaOf(r, g, b)
+      if (!matchesBackdrop(nearest.dist, luma, nearest.refLuma, limits)) continue
+      if (attachedToFigure(data, width, height, x, y, luma, nearest.dist, limits)) continue
+      remove[index] = 1
+    }
+  }
+
+  const luma = new Float32Array(count)
+  for (let index = 0; index < count; index += 1) {
+    const offset = index * 4
+    if (data[offset + 3] < 16) continue
+    luma[index] = lumaOf(data[offset], data[offset + 1], data[offset + 2])
+  }
+  for (let pass = 0; pass < 3; pass += 1) {
+    let restored = false
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = y * width + x
+        if (!remove[index] || luma[index] === 0) continue
+        const nearest = nearestBackdrop(data[index * 4], data[index * 4 + 1], data[index * 4 + 2], refs)
+        if (nearest.dist <= limits.fringeTol) continue
+        const similarKept = (nx: number, ny: number) => {
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) return false
+          const next = ny * width + nx
+          if (remove[next] || data[next * 4 + 3] < 16) return false
+          return Math.abs(luma[next] - luma[index]) <= 12
+        }
+        const between =
+          (similarKept(x - 1, y) && similarKept(x + 1, y)) ||
+          (similarKept(x, y - 1) && similarKept(x, y + 1))
+        if (!between && !thinAgainstBackdrop(luma, width, height, x, y)) continue
+        remove[index] = 0
+        restored = true
+      }
+    }
+    if (!restored) break
+  }
+
+  const ratio = removedRatio(data, remove)
+  writeAlpha(data, remove)
+  return { removedRatio: ratio }
 }

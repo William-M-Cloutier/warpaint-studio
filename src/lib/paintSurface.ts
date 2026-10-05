@@ -1,4 +1,4 @@
-import { clampCutoutStrength, removeBackdrop } from './cutout'
+import { clampCutoutStrength, projectCutout, removeBackdrop } from './cutout'
 import { clampPhotoScale, fitPhotoScale } from './photoScale'
 import { compositeSurface, sampleTintHex } from './tint'
 import {
@@ -78,7 +78,8 @@ type Session = DrawSession | PanSession | PickSession
 
 const MIN_ZOOM = 0.02
 const MAX_ZOOM = 32
-const CUTOUT_MAX_SIDE = 1600
+const CUTOUT_FULL_RES_PIXELS = 4_000_000
+const CUTOUT_COARSE_MAX_SIDE = 2200
 
 function context2d(
   canvas: HTMLCanvasElement,
@@ -311,39 +312,46 @@ export class PaintSurface {
     const sourceW = this.source.width
     const sourceH = this.source.height
     if (sourceW < 1 || sourceH < 1) return null
-    const down = Math.min(1, CUTOUT_MAX_SIDE / Math.max(sourceW, sourceH))
-    const workW = Math.max(1, Math.round(sourceW * down))
-    const workH = Math.max(1, Math.round(sourceH * down))
-    this.work.width = workW
-    this.work.height = workH
-    const workCtx = context2d(this.work, { willReadFrequently: true })
-    if (!workCtx) {
+    const sourceCtx = context2d(this.source)
+    if (!sourceCtx) {
       this.emit.error('Could not build a cutout.')
       return null
     }
-    workCtx.setTransform(1, 0, 0, 1, 0, 0)
-    workCtx.imageSmoothingEnabled = true
-    workCtx.imageSmoothingQuality = 'high'
-    workCtx.clearRect(0, 0, workW, workH)
-    workCtx.drawImage(this.source, 0, 0, workW, workH)
     let stats: CutoutResult
     try {
-      const pixels = workCtx.getImageData(0, 0, workW, workH)
-      stats = removeBackdrop({ data: pixels.data, width: workW, height: workH }, level)
-      workCtx.putImageData(pixels, 0, 0)
+      const pixels = sourceCtx.getImageData(0, 0, sourceW, sourceH)
+      if (sourceW * sourceH <= CUTOUT_FULL_RES_PIXELS) {
+        stats = removeBackdrop({ data: pixels.data, width: sourceW, height: sourceH }, level)
+      } else {
+        const down = Math.min(1, CUTOUT_COARSE_MAX_SIDE / Math.max(sourceW, sourceH))
+        const workW = Math.max(1, Math.round(sourceW * down))
+        const workH = Math.max(1, Math.round(sourceH * down))
+        this.work.width = workW
+        this.work.height = workH
+        const workCtx = context2d(this.work, { willReadFrequently: true })
+        if (!workCtx) {
+          this.emit.error('Could not build a cutout.')
+          return null
+        }
+        workCtx.setTransform(1, 0, 0, 1, 0, 0)
+        workCtx.imageSmoothingEnabled = false
+        workCtx.clearRect(0, 0, workW, workH)
+        workCtx.drawImage(this.source, 0, 0, workW, workH)
+        const coarse = workCtx.getImageData(0, 0, workW, workH)
+        removeBackdrop({ data: coarse.data, width: workW, height: workH }, level)
+        stats = projectCutout(
+          { data: pixels.data, width: sourceW, height: sourceH },
+          { data: coarse.data, width: workW, height: workH },
+          level,
+        )
+      }
+      this.sampleCtx.putImageData(pixels, 0, 0)
     } catch {
       this.emit.error('Could not read the photo for a cutout.')
       return null
     }
     this.session = null
     this.viewport.classList.remove('is-panning')
-    this.copySourceToSample()
-    const sample = this.sampleCtx
-    sample.save()
-    sample.imageSmoothingEnabled = false
-    sample.globalCompositeOperation = 'destination-in'
-    sample.drawImage(this.work, 0, 0, sourceW, sourceH)
-    sample.restore()
     this.cutoutActive = true
     this.presentPhoto()
     this.present(null)

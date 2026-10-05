@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { removeBackdrop, type RgbaBuffer } from '../src/lib/cutout.ts'
+import { projectCutout, removeBackdrop, type RgbaBuffer } from '../src/lib/cutout.ts'
 import { fitPhotoScale, photoScaleToSlider, sliderToPhotoScale } from '../src/lib/photoScale.ts'
 import { compositeSurface, sampleTintHex } from '../src/lib/tint.ts'
 
@@ -82,15 +82,18 @@ const low = makeBuffer(60, 60, [200, 200, 198])
 fillRect(low, 16, 16, 28, 28, [168, 168, 166])
 removeBackdrop(low, 8)
 removeBackdrop(closeGray, 100)
+assert.equal(alphaAt(low, 0, 0), 0, 'low strength still clears the backdrop')
 assert.equal(alphaAt(low, 30, 30), 255, 'low strength keeps a similar subject')
-assert.equal(alphaAt(closeGray, 30, 30), 0, 'high strength can remove a similar subject')
+assert.equal(alphaAt(closeGray, 0, 0), 0, 'high strength still clears the backdrop')
+assert.equal(alphaAt(closeGray, 30, 30), 255, 'high strength keeps mid-grey plastic')
 
 const holed = makeBuffer(70, 70, white)
 fillRect(holed, 15, 15, 40, 40, red)
 fillRect(holed, 30, 30, 10, 10, white)
 removeBackdrop(holed, 36)
 assert.equal(alphaAt(holed, 0, 0), 0, 'outside backdrop clears')
-assert.equal(alphaAt(holed, 35, 35), 255, 'enclosed backdrop hole stays, it is not edge-connected')
+assert.equal(alphaAt(holed, 20, 20), 255, 'subject around an enclosed hole stays')
+assert.equal(alphaAt(holed, 35, 35), 0, 'enclosed white pocket clears')
 
 const cornerSubject = makeBuffer(64, 64, white)
 fillRect(cornerSubject, 0, 0, 22, 22, red)
@@ -109,6 +112,79 @@ fillRect(noisy, 28, 18, 24, 44, [42, 48, 40])
 removeBackdrop(noisy, 42)
 assert.equal(alphaAt(noisy, 1, 1), 0, 'textured table corner clears')
 assert.equal(alphaAt(noisy, 40, 40), 255, 'mini on a textured table stays')
+
+const bg: [number, number, number] = [250, 250, 250]
+const plastic: [number, number, number] = [150, 150, 148]
+const hammer: [number, number, number] = [214, 214, 212]
+const shoulder: [number, number, number] = [218, 218, 216]
+const spike: [number, number, number] = [228, 228, 226]
+const shadowGap: [number, number, number] = [236, 236, 234]
+
+function greyMini(): RgbaBuffer {
+  const buf = makeBuffer(96, 110, bg)
+  fillRect(buf, 34, 28, 28, 36, plastic)
+  fillRect(buf, 40, 16, 16, 16, plastic)
+  fillRect(buf, 36, 64, 10, 28, plastic)
+  fillRect(buf, 52, 64, 10, 28, plastic)
+  fillRect(buf, 34, 88, 30, 8, plastic)
+  fillRect(buf, 46, 8, 2, 10, spike)
+  fillRect(buf, 52, 6, 2, 14, [240, 240, 238])
+  fillRect(buf, 41, 4, 3, 16, [240, 240, 238])
+  fillRect(buf, 16, 34, 22, 10, hammer)
+  fillRect(buf, 48, 32, 10, 8, shoulder)
+  fillRect(buf, 38, 40, 8, 8, shadowGap)
+  for (let y = 90; y < 94; y += 1) {
+    for (let x = 36; x < 62; x += 2) {
+      const i = (y * buf.width + x) * 4
+      buf.data[i] = 188
+      buf.data[i + 1] = 188
+      buf.data[i + 2] = 186
+    }
+  }
+  return buf
+}
+
+function assertGreyKept(buffer: RgbaBuffer, label: string): void {
+  assert.equal(alphaAt(buffer, 1, 1), 0, `${label}: white corner clears`)
+  assert.equal(alphaAt(buffer, 44, 36), 255, `${label}: grey body stays`)
+  assert.equal(alphaAt(buffer, 20, 38), 255, `${label}: hammer highlight stays`)
+  assert.equal(alphaAt(buffer, 52, 35), 255, `${label}: shoulder highlight stays`)
+  assert.equal(alphaAt(buffer, 46, 10), 255, `${label}: halo spike stays`)
+  assert.equal(alphaAt(buffer, 52, 7), 255, `${label}: bright halo tip stays`)
+  assert.equal(alphaAt(buffer, 42, 6), 255, `${label}: bright halo center stays`)
+  assert.equal(alphaAt(buffer, 38, 92), 255, `${label}: speckled base stays`)
+  assert.equal(alphaAt(buffer, 48, 75), 0, `${label}: white between the legs clears`)
+  assert.equal(alphaAt(buffer, 33, 50), 0, `${label}: white beside the body clears`)
+}
+
+const greyLow = greyMini()
+removeBackdrop(greyLow, 47)
+assertGreyKept(greyLow, 'strength 47')
+assert.equal(alphaAt(greyLow, 41, 43), 255, 'strength 47 leaves a shadowed pocket')
+
+const greyHigh = greyMini()
+removeBackdrop(greyHigh, 100)
+assertGreyKept(greyHigh, 'strength 100')
+assert.equal(alphaAt(greyHigh, 41, 43), 0, 'strength 100 clears a shadowed white pocket')
+assert.deepEqual(rgbAt(greyHigh, 20, 38), hammer, 'hammer RGB stays put')
+
+const coarse = makeBuffer(4, 4, bg)
+for (let i = 3; i < coarse.data.length; i += 4) coarse.data[i] = 0
+const projected = makeBuffer(8, 8, bg)
+fillRect(projected, 2, 2, 4, 4, plastic)
+projectCutout(projected, coarse, 100)
+assert.equal(alphaAt(projected, 0, 0), 0, 'coarse mask clears backdrop at full resolution')
+assert.equal(alphaAt(projected, 3, 3), 255, 'full-resolution grey is restored when a coarse cell was dropped')
+
+const spikeCoarse = makeBuffer(6, 8, bg)
+for (let i = 3; i < spikeCoarse.data.length; i += 4) spikeCoarse.data[i] = 0
+const spikeFull = makeBuffer(12, 16, bg)
+fillRect(spikeFull, 4, 8, 5, 6, plastic)
+fillRect(spikeFull, 5, 1, 3, 10, [240, 240, 238])
+projectCutout(spikeFull, spikeCoarse, 100)
+assert.equal(alphaAt(spikeFull, 0, 0), 0, 'coarse projection still clears white')
+assert.equal(alphaAt(spikeFull, 6, 2), 255, 'coarse projection keeps the middle of a bright spike')
+assert.equal(alphaAt(spikeFull, 6, 10), 255, 'coarse projection keeps the plastic under the spike')
 
 const wide = fitPhotoScale(800, 600, 2000, 500)
 const tall = fitPhotoScale(800, 600, 500, 2000)
