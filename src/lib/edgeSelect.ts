@@ -1,11 +1,14 @@
 /**
  * Edge-first region selection for grey miniatures.
  *
- * Shade on a rounded plate is a smooth ramp. A sculpt seam is a thin ridge.
- * A symmetric blur of a linear ramp is still that ramp, so the difference of
- * a fine blur and a broad blur is ~0 on shading and large on a crease.
- * The wand grows across that weak field and hard-stops on strong ridges.
- * Suggest takes the same ridges and keeps each open area as a part.
+ * Walls are thin crests: Sobel magnitude with non-maximum suppression, and a
+ * narrow-crease term (fine blur minus a wider blur). A soft highlight is a
+ * shallow ramp, so both responses stay weak and the wand walks across it.
+ * A sculpt seam is a sharp jump or a thin dark line, and it stays a wall.
+ * Plain gradient hysteresis on this photo either chops a plate into texture
+ * or merges chest, shield, and base — the crease term is what separates them.
+ * Growth is hard-gated to the miniature (cutout alpha, and any border-connected
+ * backdrop that is still opaque). Suggest uses the same edges.
  */
 
 const ALPHA_CUT = 16
@@ -21,6 +24,8 @@ export type EdgeMap = {
   edge: Float32Array
   luma: Float32Array
   subjectCount: number
+  /** Full-resolution. 1 = off the miniature (clear alpha or border-connected backdrop). */
+  off: Uint8Array
 }
 
 export type RegionMask = { mask: Uint8Array; count: number }
@@ -50,6 +55,7 @@ export function suggestRegions(
 }
 
 export function buildEdgeMap(rgba: Uint8ClampedArray, width: number, height: number): EdgeMap {
+  const off = backdropGate(rgba, width, height)
   const scale = chooseScale(width, height)
   const cw = Math.max(1, Math.round(width / scale))
   const ch = Math.max(1, Math.round(height / scale))
@@ -70,10 +76,12 @@ export function buildEdgeMap(rgba: Uint8ClampedArray, width: number, height: num
       const yStop = Math.max(y0 + 1, y1)
       const xStop = Math.max(x0 + 1, x1)
       for (let y = y0; y < yStop && y < height; y += 1) {
+        const row = y * width
         for (let x = x0; x < xStop && x < width; x += 1) {
-          const o = (y * width + x) * 4
+          const pixel = row + x
+          const o = pixel * 4
           samples += 1
-          if (rgba[o + 3] < ALPHA_CUT) continue
+          if (off[pixel] !== 0) continue
           lumSum += 0.2126 * rgba[o] + 0.7152 * rgba[o + 1] + 0.0722 * rgba[o + 2]
           opaque += 1
         }
@@ -88,7 +96,120 @@ export function buildEdgeMap(rgba: Uint8ClampedArray, width: number, height: num
   }
 
   const edge = ridgeField(luma, subject, cw, ch)
-  return { fullWidth: width, fullHeight: height, width: cw, height: ch, scale, subject, edge, luma, subjectCount }
+  return { fullWidth: width, fullHeight: height, width: cw, height: ch, scale, subject, edge, luma, subjectCount, off }
+}
+
+/**
+ * Off-model pixels: cleared alpha, and the border-connected backdrop.
+ * A soft highlight on a plate is not backdrop — it is darker than the field
+ * or it is walled in by the miniature — so the wand cannot walk off the
+ * model where a pad fades toward white.
+ */
+function backdropGate(rgba: Uint8ClampedArray, width: number, height: number): Uint8Array {
+  const count = width * height
+  const off = new Uint8Array(count)
+  for (let i = 0; i < count; i += 1) {
+    if (rgba[i * 4 + 3] < ALPHA_CUT) off[i] = 1
+  }
+
+  type Ref = { r: number; g: number; b: number }
+  const seenRef = new Uint8Array(1 << 15)
+  const refs: Ref[] = []
+  const consider = (x: number, y: number) => {
+    const o = (y * width + x) * 4
+    if (rgba[o + 3] < ALPHA_CUT) return
+    const r = rgba[o]
+    const g = rgba[o + 1]
+    const b = rgba[o + 2]
+    if (Math.max(r, g, b) - Math.min(r, g, b) > 22) return
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    if (luma < 200) return
+    const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)
+    if (seenRef[key] !== 0) return
+    seenRef[key] = 1
+    refs.push({ r, g, b })
+  }
+  const stepX = Math.max(1, Math.floor(width / 64))
+  const stepY = Math.max(1, Math.floor(height / 64))
+  for (let x = 0; x < width; x += stepX) {
+    consider(x, 0)
+    if (height > 1) consider(x, height - 1)
+  }
+  for (let y = 0; y < height; y += stepY) {
+    consider(0, y)
+    if (width > 1) consider(width - 1, y)
+  }
+  if (refs.length === 0) return off
+
+  const matches = (index: number): boolean => {
+    const o = index * 4
+    const r = rgba[o]
+    const g = rgba[o + 1]
+    const b = rgba[o + 2]
+    if (Math.max(r, g, b) - Math.min(r, g, b) > 22) return false
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    if (luma < 206) return false
+    let near = false
+    for (let i = 0; i < refs.length; i += 1) {
+      const ref = refs[i]
+      const dr = r - ref.r
+      const dg = g - ref.g
+      const db = b - ref.b
+      if (dr * dr * 0.5 + dg * dg + db * db * 0.4 <= 55 * 55) {
+        near = true
+        break
+      }
+    }
+    if (!near) return false
+    // Near-white fringe is backdrop even where it touches the miniature.
+    // A milder bright pixel glued to darker plastic is a highlight, not the field.
+    if (luma >= 236) return true
+    const x = index % width
+    const y = (index - x) / width
+    let darker = 0
+    for (let dy = -1; dy <= 1; dy += 1) {
+      const ny = y + dy
+      if (ny < 0 || ny >= height) continue
+      for (let dx = -1; dx <= 1; dx += 1) {
+        if (dx === 0 && dy === 0) continue
+        const nx = x + dx
+        if (nx < 0 || nx >= width) continue
+        const j = (ny * width + nx) * 4
+        if (rgba[j + 3] < ALPHA_CUT) continue
+        const gap = luma - (0.2126 * rgba[j] + 0.7152 * rgba[j + 1] + 0.0722 * rgba[j + 2])
+        if (gap >= 42) darker += 1
+      }
+    }
+    return darker < 2
+  }
+
+  const queue = new Int32Array(count)
+  let head = 0
+  let tail = 0
+  const push = (index: number) => {
+    if (off[index] !== 0 || !matches(index)) return
+    off[index] = 1
+    queue[tail] = index
+    tail += 1
+  }
+  for (let x = 0; x < width; x += 1) {
+    push(x)
+    if (height > 1) push((height - 1) * width + x)
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    push(y * width)
+    if (width > 1) push(y * width + width - 1)
+  }
+  while (head < tail) {
+    const index = queue[head]
+    head += 1
+    const x = index % width
+    if (x > 0) push(index - 1)
+    if (x + 1 < width) push(index + 1)
+    if (index >= width) push(index - width)
+    if (index + width < count) push(index + width)
+  }
+  return off
 }
 
 function selectOnMap(
@@ -98,10 +219,17 @@ function selectOnMap(
   seedY: number,
   tolerance: number,
 ): RegionMask | null {
-  const sx = Math.floor(seedX)
-  const sy = Math.floor(seedY)
+  let sx = Math.floor(seedX)
+  let sy = Math.floor(seedY)
   if (sx < 0 || sy < 0 || sx >= map.fullWidth || sy >= map.fullHeight) return null
-  if (rgba[(sy * map.fullWidth + sx) * 4 + 3] < ALPHA_CUT) return null
+  if (map.off[sy * map.fullWidth + sx] !== 0) {
+    // Cleared pixels stay empty. Opaque backdrop only snaps when the click is on the fringe.
+    if (rgba[(sy * map.fullWidth + sx) * 4 + 3] < ALPHA_CUT) return null
+    const snapped = nearestModel(map.off, map.fullWidth, map.fullHeight, sx, sy, 8)
+    if (!snapped) return null
+    sx = snapped.x
+    sy = snapped.y
+  }
 
   const walls = wallsFor(map, tolerance)
   const seed = placeSeed(map, walls, sx, sy)
@@ -136,23 +264,21 @@ function chooseScale(width: number, height: number): number {
 }
 
 /**
- * |fine − broad| on luminance. Zero along a linear shade ramp, high on a
- * narrow crease. A light blur joins broken ridge pixels.
+ * Crest map used as walls. Sobel magnitude is thinned like Canny (non-maximum
+ * suppression on a light blur). The narrow-crease term is high only where a
+ * thin line differs from its neighborhood, and near zero on a linear ramp.
+ * Each is scaled by its own peak so a strong seam lands near 40.
  */
 function ridgeField(luma: Float32Array, subject: Uint8Array, width: number, height: number): Float32Array {
   const maxSide = Math.max(width, height)
-  const fineR = 1
-  // Wider than a seam, narrower than a plate, so a shade ramp cancels and a crease does not.
-  const broadR = Math.max(3, Math.round(maxSide / 100))
-  const fine = boxBlur(luma, subject, width, height, fineR)
-  const broad = boxBlur(luma, subject, width, height, broadR)
+  const fine = boxBlur(luma, subject, width, height, 1)
+  const broad = boxBlur(luma, subject, width, height, Math.max(3, Math.round(maxSide / 100)))
   const dog = new Float32Array(width * height)
   for (let i = 0; i < dog.length; i += 1) {
     if (subject[i] === 0) continue
     dog[i] = Math.abs(fine[i] - broad[i])
   }
-  const closed = boxBlur(dog, subject, width, height, 1)
-  const dogRidge = thinRidge(closed, subject, width, height)
+  const dogRidge = thinRidge(boxBlur(dog, subject, width, height, 1), subject, width, height)
   const stepRidge = gradientRidge(luma, subject, width, height)
   const dogPeak = Math.max(quantile(dogRidge, subject, 0.995), 1)
   const stepPeak = Math.max(quantile(stepRidge, subject, 0.995), 1)
@@ -249,6 +375,66 @@ function wallsFor(map: EdgeMap, tolerance: number): Uint8Array {
   const radius = Math.max(1, Math.round(Math.max(map.width, map.height) / 420))
   dilateWalls(walls, map.subject, map.width, map.height, t < 0.8 ? radius : 1)
   return walls
+}
+
+function boxBlur(
+  src: Float32Array,
+  subject: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+): Float32Array {
+  if (radius < 1) return src.slice()
+  const temp = new Float32Array(width * height)
+  blurAxis(src, subject, width, height, radius, temp, true)
+  const dst = new Float32Array(width * height)
+  blurAxis(temp, subject, width, height, radius, dst, false)
+  return dst
+}
+
+function blurAxis(
+  src: Float32Array,
+  subject: Uint8Array,
+  width: number,
+  height: number,
+  radius: number,
+  dst: Float32Array,
+  horizontal: boolean,
+): void {
+  const length = horizontal ? width : height
+  const lines = horizontal ? height : width
+  for (let line = 0; line < lines; line += 1) {
+    const indexAt = (cursor: number) => (horizontal ? line * width + cursor : cursor * width + line)
+    let sum = 0
+    let count = 0
+    const add = (cursor: number, sign: number) => {
+      if (cursor < 0 || cursor >= length) return
+      const index = indexAt(cursor)
+      if (subject[index] === 0) return
+      sum += src[index] * sign
+      count += sign
+    }
+    for (let cursor = -radius; cursor <= radius; cursor += 1) add(cursor, 1)
+    for (let cursor = 0; cursor < length; cursor += 1) {
+      const index = indexAt(cursor)
+      if (subject[index] === 0) dst[index] = 0
+      else dst[index] = count > 0 ? sum / count : src[index]
+      add(cursor - radius, -1)
+      add(cursor + radius + 1, 1)
+    }
+  }
+}
+
+function quantile(values: Float32Array, subject: Uint8Array, q: number): number {
+  const sample: number[] = []
+  const stride = Math.max(1, Math.floor(subject.length / 80000))
+  for (let i = 0; i < subject.length; i += stride) {
+    if (subject[i] !== 0) sample.push(values[i])
+  }
+  if (sample.length === 0) return 0
+  sample.sort((a, b) => a - b)
+  const index = clamp(Math.round(q * (sample.length - 1)), 0, sample.length - 1)
+  return sample[index]
 }
 
 function dilateWalls(walls: Uint8Array, subject: Uint8Array, width: number, height: number, radius: number): void {
@@ -656,7 +842,8 @@ function upsample(coarse: Uint8Array, map: EdgeMap, rgba: Uint8ClampedArray): Re
     const row = y * fullWidth
     const coarseRow = cy * width
     for (let x = 0; x < fullWidth; x += 1) {
-      if (rgba[(row + x) * 4 + 3] < ALPHA_CUT) continue
+      const pixel = row + x
+      if (map.off[pixel] !== 0 || rgba[pixel * 4 + 3] < ALPHA_CUT) continue
       const cx = Math.min(width - 1, Math.floor(x / scale))
       if (coarse[coarseRow + cx] === 0) continue
       mask[row + x] = 255
@@ -664,66 +851,6 @@ function upsample(coarse: Uint8Array, map: EdgeMap, rgba: Uint8ClampedArray): Re
     }
   }
   return { mask, count }
-}
-
-function boxBlur(
-  src: Float32Array,
-  subject: Uint8Array,
-  width: number,
-  height: number,
-  radius: number,
-): Float32Array {
-  if (radius < 1) return src.slice()
-  const temp = new Float32Array(width * height)
-  blurAxis(src, subject, width, height, radius, temp, true)
-  const dst = new Float32Array(width * height)
-  blurAxis(temp, subject, width, height, radius, dst, false)
-  return dst
-}
-
-function blurAxis(
-  src: Float32Array,
-  subject: Uint8Array,
-  width: number,
-  height: number,
-  radius: number,
-  dst: Float32Array,
-  horizontal: boolean,
-): void {
-  const length = horizontal ? width : height
-  const lines = horizontal ? height : width
-  for (let line = 0; line < lines; line += 1) {
-    const indexAt = (cursor: number) => (horizontal ? line * width + cursor : cursor * width + line)
-    let sum = 0
-    let count = 0
-    const add = (cursor: number, sign: number) => {
-      if (cursor < 0 || cursor >= length) return
-      const index = indexAt(cursor)
-      if (subject[index] === 0) return
-      sum += src[index] * sign
-      count += sign
-    }
-    for (let cursor = -radius; cursor <= radius; cursor += 1) add(cursor, 1)
-    for (let cursor = 0; cursor < length; cursor += 1) {
-      const index = indexAt(cursor)
-      if (subject[index] === 0) dst[index] = 0
-      else dst[index] = count > 0 ? sum / count : src[index]
-      add(cursor - radius, -1)
-      add(cursor + radius + 1, 1)
-    }
-  }
-}
-
-function quantile(values: Float32Array, subject: Uint8Array, q: number): number {
-  const sample: number[] = []
-  const stride = Math.max(1, Math.floor(subject.length / 80000))
-  for (let i = 0; i < subject.length; i += stride) {
-    if (subject[i] !== 0) sample.push(values[i])
-  }
-  if (sample.length === 0) return 0
-  sample.sort((a, b) => a - b)
-  const index = clamp(Math.round(q * (sample.length - 1)), 0, sample.length - 1)
-  return sample[index]
 }
 
 function chamfer(mask: Uint8Array, width: number, height: number): Uint16Array {
@@ -880,6 +1007,36 @@ function openRun(
     if (index + width < height * width) push(index + width)
   }
   return count
+}
+
+function nearestModel(
+  off: Uint8Array,
+  width: number,
+  height: number,
+  cx: number,
+  cy: number,
+  radius: number,
+): { x: number; y: number } | null {
+  let bestX = -1
+  let bestY = -1
+  let bestD = Infinity
+  const y0 = Math.max(0, cy - radius)
+  const y1 = Math.min(height - 1, cy + radius)
+  const x0 = Math.max(0, cx - radius)
+  const x1 = Math.min(width - 1, cx + radius)
+  for (let y = y0; y <= y1; y += 1) {
+    for (let x = x0; x <= x1; x += 1) {
+      if (off[y * width + x] !== 0) continue
+      const d = (x - cx) * (x - cx) + (y - cy) * (y - cy)
+      if (d < bestD) {
+        bestD = d
+        bestX = x
+        bestY = y
+      }
+    }
+  }
+  if (bestX < 0) return null
+  return { x: bestX, y: bestY }
 }
 
 function nearestSubject(subject: Uint8Array, width: number, height: number, cx: number, cy: number, radius: number): number {
