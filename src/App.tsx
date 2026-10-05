@@ -70,7 +70,8 @@ export function App() {
   const [sections, setSections] = useState<SectionInfo[]>([])
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null)
   const [maskMode, setMaskMode] = useState<MaskMode>('new')
-  const [tolerance, setTolerance] = useState(32)
+  const [tolerance, setTolerance] = useState(48)
+  const [ignoreLighting, setIgnoreLighting] = useState(true)
   const [proposeBusy, setProposeBusy] = useState(false)
 
   const stageRef = useRef<StageHandle>(null)
@@ -422,6 +423,7 @@ export function App() {
           opacity={opacity}
           spaceHeld={spaceHeld}
           tolerance={tolerance}
+          ignoreLighting={ignoreLighting}
           maskMode={maskMode}
           sectionChip={sectionChip}
           onPickColor={(hex, commit) => {
@@ -443,10 +445,12 @@ export function App() {
           activeId={activeSectionId}
           maskMode={maskMode}
           tolerance={tolerance}
+          ignoreLighting={ignoreLighting}
           proposeBusy={proposeBusy}
           onTool={setTool}
           onMaskMode={setMaskMode}
           onTolerance={setTolerance}
+          onIgnoreLighting={setIgnoreLighting}
           onSelect={(id) => stageRef.current?.selectSection(id)}
           onRename={(id, name) => stageRef.current?.renameSection(id, name)}
           onCategory={labelSection}

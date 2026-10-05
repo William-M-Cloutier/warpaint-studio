@@ -37,6 +37,7 @@ export type SurfaceConfig = {
   space: boolean
   tolerance: number
   maskMode: MaskMode
+  ignoreLighting: boolean
 }
 
 type SurfaceEvents = {
@@ -191,8 +192,9 @@ export class PaintSurface {
   private brushSize = 28
   private opacity = 1
   private space = false
-  private tolerance = 32
+  private tolerance = 48
   private maskMode: MaskMode = 'new'
+  private ignoreLighting = true
   private readonly sections = new SectionLayer()
   private overlayCtx: CanvasRenderingContext2D | null = null
   /** Alpha of the cutout sample. Replaced, never mutated, so old strokes keep their clip. */
@@ -243,6 +245,7 @@ export class PaintSurface {
     this.space = config.space
     this.tolerance = config.tolerance
     this.maskMode = config.maskMode
+    this.ignoreLighting = config.ignoreLighting
     if (this.ring && !showsBrushRing(config.tool, config.space)) {
       this.ring.style.visibility = 'hidden'
     }
@@ -583,7 +586,7 @@ export class PaintSurface {
     if (!this.image || !this.sampleCtx || this.disposed) return 0
     const pixels = this.readSample()
     if (!pixels) return 0
-    const count = this.sections.propose(pixels.data)
+    const count = this.sections.propose(pixels.data, this.ignoreLighting)
     if (count > 0) this.noteSectionEdit()
     else {
       this.refreshOverlay(null, null)
@@ -906,7 +909,10 @@ export class PaintSurface {
     ctx.beginPath()
     ctx.rect(region.x, region.y, region.w, region.h)
     ctx.clip()
+    ctx.globalCompositeOperation = 'source-over'
     ctx.imageSmoothingEnabled = false
+    // Replace the rect. Source-over of the backup would stack partial paint on itself.
+    ctx.clearRect(region.x, region.y, region.w, region.h)
     ctx.drawImage(this.backup, 0, 0)
     ctx.restore()
     paintStroke(ctx, session.stroke)
@@ -1013,6 +1019,8 @@ export class PaintSurface {
     ctx.beginPath()
     ctx.rect(region.x, region.y, region.w, region.h)
     ctx.clip()
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.clearRect(region.x, region.y, region.w, region.h)
     ctx.drawImage(this.maskBackup, 0, 0)
     ctx.restore()
   }
@@ -1086,7 +1094,14 @@ export class PaintSurface {
       this.session = { mode: 'wand', pointerId: event.pointerId }
       this.capture(event)
       if (!pixels) return
-      const result = this.sections.wand(pixels.data, point.x, point.y, this.tolerance, this.maskMode)
+      const result = this.sections.wand(
+        pixels.data,
+        point.x,
+        point.y,
+        this.tolerance,
+        this.maskMode,
+        this.ignoreLighting,
+      )
       if (!result.ok) {
         this.emit.error(result.reason)
         this.refreshOverlay(null, null)

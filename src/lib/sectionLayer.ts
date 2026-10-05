@@ -162,9 +162,10 @@ export class SectionLayer {
     y: number,
     tolerance: number,
     mode: MaskMode,
+    ignoreLighting = true,
   ): SectionResult {
     this.cancelPreview()
-    const flooded = floodMask(rgba, this.width, this.height, x, y, tolerance)
+    const flooded = floodMask(rgba, this.width, this.height, x, y, tolerance, { ignoreLighting })
     if (!flooded) return { ok: false, reason: 'That spot is empty. Click the miniature.' }
     if (flooded.count < MIN_WAND_PIXELS) {
       return { ok: false, reason: 'Nothing selected. Raise tolerance or click a broader area.' }
@@ -180,9 +181,9 @@ export class SectionLayer {
     return this.applyFull(filled.mask, mode)
   }
 
-  propose(rgba: Uint8ClampedArray): number {
+  propose(rgba: Uint8ClampedArray, ignoreLighting = true): number {
     this.cancelPreview()
-    const masks = proposeSectionMasks(rgba, this.width, this.height)
+    const masks = proposeSectionMasks(rgba, this.width, this.height, { ignoreLighting })
     if (masks.length < 2) return 0
     const activeBefore = this.activeId
     const index = this.sections.length

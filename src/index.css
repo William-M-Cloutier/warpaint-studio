@@ -230,11 +230,18 @@ textarea { user-select: text; }
   border-right: 1px solid var(--line);
 }
 
-.tool-group,
+.tool-group {
+  display: grid;
+  grid-template-columns: repeat(2, 44px);
+  gap: 6px;
+  justify-content: center;
+}
+
 .history-row {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 6px;
+  justify-content: center;
 }
 
 .tool-btn {
@@ -561,6 +568,22 @@ textarea { user-select: text; }
   align-items: center;
   gap: 8px;
   margin-top: 0;
+}
+
+.lighting-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.lighting-toggle input {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  margin: 0;
 }
 
 .section-tolerance input { flex: 1; width: auto; }
@@ -1010,7 +1033,11 @@ button.section-card:hover:not(:disabled),
     gap: 12px;
   }
 
-  .tool-group,
+  .tool-group {
+    display: flex;
+    flex-direction: row;
+  }
+
   .history-row { flex-direction: row; }
 
   .tool-slider { width: 128px; flex: none; }

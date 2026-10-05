@@ -9,10 +9,12 @@ type SectionPanelProps = {
   activeId: string | null
   maskMode: MaskMode
   tolerance: number
+  ignoreLighting: boolean
   proposeBusy: boolean
   onTool: (tool: Tool) => void
   onMaskMode: (mode: MaskMode) => void
   onTolerance: (value: number) => void
+  onIgnoreLighting: (value: boolean) => void
   onSelect: (id: string | null) => void
   onRename: (id: string, name: string) => void
   onCategory: (id: string, category: SectionCategory, customLabel: string) => void
@@ -41,10 +43,12 @@ export function SectionPanel({
   activeId,
   maskMode,
   tolerance,
+  ignoreLighting,
   proposeBusy,
   onTool,
   onMaskMode,
   onTolerance,
+  onIgnoreLighting,
   onSelect,
   onRename,
   onCategory,
@@ -102,7 +106,7 @@ export function SectionPanel({
           <input
             type="range"
             min={0}
-            max={90}
+            max={120}
             step={1}
             value={tolerance}
             aria-label="Wand tolerance"
@@ -112,7 +116,20 @@ export function SectionPanel({
           <span className="slider-value">{tolerance}</span>
         </label>
       )}
-      <p className="tool-note">Wand, lasso, or mask. New starts a section. Add and Subtract edit the active one.</p>
+      <label className="lighting-toggle">
+        <input
+          type="checkbox"
+          checked={ignoreLighting}
+          aria-label="Ignore lighting"
+          disabled={!hasImage}
+          onChange={(event) => onIgnoreLighting(event.target.checked)}
+        />
+        Ignore lighting
+      </label>
+      <p className="tool-note">
+        Wand, lasso, or mask. New starts a section. Add and Subtract edit the active one. Ignore lighting
+        follows one material through shade and stops at a crease.
+      </p>
       <button
         type="button"
         className="btn btn-block"

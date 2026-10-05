@@ -203,4 +203,72 @@ assert.equal(layer.list()[0]?.category, 'trim')
 layer.setLabel(custom.id, 'custom', 'Shoulder pad')
 assert.equal(layer.list()[0]?.customLabel, 'Shoulder pad')
 
+function fillGradient(
+  data: Uint8ClampedArray,
+  width: number,
+  x0: number,
+  y0: number,
+  w: number,
+  h: number,
+  lum0: number,
+  lum1: number,
+): void {
+  for (let y = 0; y < h; y += 1) {
+    const t = h <= 1 ? 0 : y / (h - 1)
+    const lum = Math.round(lum0 + (lum1 - lum0) * t)
+    for (let x = 0; x < w; x += 1) {
+      const i = ((y0 + y) * width + (x0 + x)) * 4
+      data[i] = lum
+      data[i + 1] = lum
+      data[i + 2] = lum
+      data[i + 3] = 255
+    }
+  }
+}
+
+const shadeW = 180
+const shadeH = 90
+const shaded = makeBuffer(shadeW, shadeH, [244, 244, 242, 255])
+fillGradient(shaded, shadeW, 10, 8, 60, 74, 48, 210)
+fillRect(shaded, shadeW, 78, 8, 8, 74, [8, 8, 8, 255])
+fillGradient(shaded, shadeW, 94, 8, 60, 74, 48, 210)
+
+const across = floodMask(shaded, shadeW, shadeH, 24, 12, 32)
+assert.ok(across)
+assert.equal(maskAt(across.mask, shadeW, 24, 12), 255, 'seed on the dark end stays selected')
+assert.equal(maskAt(across.mask, shadeW, 40, 74), 255, 'the lit end of the same plate stays selected')
+assert.equal(maskAt(across.mask, shadeW, 120, 74), 0, 'a crease stops the fill before the next plate')
+assert.equal(maskAt(across.mask, shadeW, 2, 2), 0, 'shade-aware wand stays off the backdrop')
+
+const rawShade = floodMask(shaded, shadeW, shadeH, 24, 12, 32, { ignoreLighting: false })
+assert.ok(rawShade)
+assert.equal(maskAt(rawShade.mask, shadeW, 40, 74), 0, 'raw color match still stops on a shade ramp')
+
+const onePlateW = 140
+const onePlateH = 80
+const onePlate = makeBuffer(onePlateW, onePlateH, [236, 236, 234, 255])
+fillGradient(onePlate, onePlateW, 24, 10, 90, 60, 40, 200)
+const shadeProposal = proposeSectionMasks(onePlate, onePlateW, onePlateH)
+const top = 16 * onePlateW + 50
+const bottom = 64 * onePlateW + 50
+assert.equal(
+  shadeProposal.some((entry) => entry[top] > 0 && entry[bottom] === 0),
+  false,
+  'suggest does not split a smooth shade ramp',
+)
+assert.equal(
+  shadeProposal.some((entry) => entry[bottom] > 0 && entry[top] === 0),
+  false,
+  'suggest does not split a smooth shade ramp',
+)
+
+const splitShade = proposeSectionMasks(shaded, shadeW, shadeH)
+const leftLit = splitShade.find((entry) => maskAt(entry, shadeW, 24, 12) > 0)
+const rightLit = splitShade.find((entry) => maskAt(entry, shadeW, 120, 12) > 0)
+assert.ok(leftLit, 'the dark plate is proposed')
+assert.ok(rightLit, 'the second plate is proposed')
+assert.equal(maskAt(leftLit, shadeW, 40, 74), 255, 'one proposed plate includes its highlight and its shadow')
+assert.equal(maskAt(rightLit, shadeW, 130, 74), 255, 'the other plate includes its highlight and its shadow')
+assert.equal(maskAt(leftLit, shadeW, 120, 40), 0, 'proposed plates stay on their own side of the crease')
+
 console.log('section checks passed')
