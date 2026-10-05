@@ -379,7 +379,7 @@ export class PaintSurface {
       cancelAnimationFrame(this.raf)
       this.raf = 0
     }
-    if (session.stroke.tool === 'eraser') this.renderDraw(session)
+    if (session.stroke.tool === 'eraser') this.commitEraser(session.stroke)
     else if (this.paintCtx) paintStroke(this.paintCtx, session.stroke)
     this.clearPreview()
     this.session = null
@@ -387,6 +387,15 @@ export class PaintSurface {
     this.push({ kind: 'stroke', stroke: session.stroke })
     if (session.stroke.tool === 'brush') this.emit.stroke(session.stroke.color)
     this.emitHistory()
+  }
+
+  /** Rebuild the eraser from the pre-stroke snapshot so undo replay matches the committed pixels. */
+  private commitEraser(stroke: Stroke): void {
+    const ctx = this.paintCtx
+    if (!ctx) return
+    ctx.clearRect(0, 0, this.paint.width, this.paint.height)
+    ctx.drawImage(this.backup, 0, 0)
+    paintStroke(ctx, stroke)
   }
 
   private scheduleDraw(): void {

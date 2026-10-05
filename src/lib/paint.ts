@@ -59,7 +59,7 @@ export function strokeBounds(stroke: Stroke): Bounds | null {
     maxX = Math.max(maxX, point.x)
     maxY = Math.max(maxY, point.y)
   }
-  const pad = stroke.size / 2 + 8
+  const pad = stroke.size / 2 + 16
   return {
     x: Math.floor(minX - pad),
     y: Math.floor(minY - pad),
