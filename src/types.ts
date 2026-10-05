@@ -29,6 +29,13 @@ export type HistoryState = {
   hasPaint: boolean
 }
 
+/** Picture adjustments. View pan/zoom is not part of this. */
+export type PhotoState = {
+  /** 1 shows the photo at its pixel size before view zoom. */
+  contentScale: number
+  cutoutActive: boolean
+}
+
 export type StudioPrefs = {
   color: string
   recent: string[]

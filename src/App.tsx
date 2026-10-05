@@ -9,7 +9,7 @@ import { useTheme } from './hooks/useTheme'
 import { createId, normalizeHex, rememberColor } from './lib/color'
 import { decodeImage, isImageFile, photoTooLarge } from './lib/imageFile'
 import { loadPrefs, savePrefs } from './lib/storage'
-import type { ColorScheme, HistoryState, LoadedPhoto, SchemeColor, Tool } from './types'
+import type { ColorScheme, HistoryState, LoadedPhoto, PhotoState, SchemeColor, Tool } from './types'
 
 // TODO(tutorial): an in-app tutorial comes near the end, after this workflow settles.
 
@@ -52,12 +52,17 @@ export function App() {
   const [draftName, setDraftName] = useState('Untitled scheme')
   const [savePreview, setSavePreview] = useState<SchemeColor[]>([])
   const [notice, setNotice] = useState<Notice | null>(null)
+  const [contentScale, setContentScale] = useState(1)
+  const [cutoutActive, setCutoutActive] = useState(false)
+  const [cutoutStrength, setCutoutStrength] = useState(34)
+  const [cutoutBusy, setCutoutBusy] = useState(false)
 
   const stageRef = useRef<StageHandle>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
   const imageRef = useRef(image)
   const dialogRef = useRef(dialog)
+  const cutoutTimer = useRef(0)
   imageRef.current = image
   dialogRef.current = dialog
 
@@ -78,7 +83,13 @@ export function App() {
   useEffect(() => {
     return () => {
       if (imageRef.current) URL.revokeObjectURL(imageRef.current.url)
+      window.clearTimeout(cutoutTimer.current)
     }
+  }, [])
+
+  const onPhoto = useCallback((photo: PhotoState) => {
+    setContentScale((current) => (current === photo.contentScale ? current : photo.contentScale))
+    setCutoutActive((current) => (current === photo.cutoutActive ? current : photo.cutoutActive))
   }, [])
 
   const onHistory = useCallback((next: HistoryState) => {
@@ -113,6 +124,8 @@ export function App() {
         const next = { url, name: file.name, width, height, element }
         const previousUrl = imageRef.current?.url
         if (previousUrl) URL.revokeObjectURL(previousUrl)
+        window.clearTimeout(cutoutTimer.current)
+        setCutoutActive(false)
         setImage(next)
         setHistory(EMPTY_HISTORY)
         flash(`Loaded ${file.name}`)
@@ -212,9 +225,10 @@ export function App() {
         return
       }
       if (mod || event.altKey) return
-      if (event.key === '0') {
+      if (event.code === 'Digit0') {
         event.preventDefault()
-        stageRef.current?.fit()
+        if (event.shiftKey) stageRef.current?.autoScale()
+        else stageRef.current?.fit()
         return
       }
       if (key === 'b' || key === '1') setTool('brush')
@@ -272,6 +286,31 @@ export function App() {
   }
 
   const closeDialog = useCallback(() => setDialog(null), [])
+
+  const runCutout = (strength: number, announce: boolean) => {
+    setCutoutBusy(true)
+    window.setTimeout(() => {
+      const result = stageRef.current?.applyCutout(strength) ?? null
+      setCutoutBusy(false)
+      if (!announce || !result) return
+      if (result.removedRatio < 0.01) {
+        flash('The edges already match the miniature. Raise cutout strength to remove more.')
+      } else if (result.removedRatio > 0.92) {
+        flash('That strength removed most of the photo. Lower it, or reset the cutout.')
+      } else {
+        flash('Backdrop removed. Reset cutout restores the photo.')
+      }
+    }, 30)
+  }
+
+  const onCutoutStrength = (value: number) => {
+    setCutoutStrength(value)
+    if (!cutoutActive) return
+    window.clearTimeout(cutoutTimer.current)
+    cutoutTimer.current = window.setTimeout(() => {
+      stageRef.current?.applyCutout(value)
+    }, 80)
+  }
   const replaceName = schemes.find((scheme) => scheme.name.toLowerCase() === draftName.trim().toLowerCase())
 
   return (
@@ -280,6 +319,7 @@ export function App() {
         theme={theme}
         image={image}
         canClear={history.hasPaint}
+        cutoutActive={cutoutActive}
         onUpload={() => fileRef.current?.click()}
         onSave={openSave}
         onClear={() => {
@@ -301,6 +341,24 @@ export function App() {
           onOpacity={setOpacity}
           onUndo={() => stageRef.current?.undo()}
           onRedo={() => stageRef.current?.redo()}
+          hasImage={image !== null}
+          contentScale={contentScale}
+          cutoutStrength={cutoutStrength}
+          cutoutActive={cutoutActive}
+          cutoutBusy={cutoutBusy}
+          onPhotoScale={(scale) => {
+            setContentScale(scale)
+            stageRef.current?.setContentScale(scale)
+          }}
+          onAutoScale={() => stageRef.current?.autoScale()}
+          onFitView={() => stageRef.current?.fit()}
+          onCutoutStrength={onCutoutStrength}
+          onRemoveBackdrop={() => runCutout(cutoutStrength, true)}
+          onResetCutout={() => {
+            window.clearTimeout(cutoutTimer.current)
+            stageRef.current?.resetCutout()
+            flash('Cutout reset')
+          }}
         />
         <CanvasStage
           ref={stageRef}
@@ -316,6 +374,7 @@ export function App() {
           }}
           onStroke={remember}
           onHistory={onHistory}
+          onPhoto={onPhoto}
           onError={flash}
           onBrowse={() => fileRef.current?.click()}
         />

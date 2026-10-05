@@ -14,10 +14,10 @@
   --danger-text: #2a100c;
   --line: rgba(244, 240, 231, 0.1);
   --line-strong: rgba(244, 240, 231, 0.18);
-  --checker: rgba(255, 255, 255, 0.035);
+  --checker: rgba(255, 255, 255, 0.07);
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
   --radius: 10px;
-  --tool-w: 112px;
+  --tool-w: 156px;
   --panel-w: 312px;
   --font: "Outfit", "Segoe UI", sans-serif;
   --display: "Fraunces", Georgia, serif;
@@ -40,7 +40,7 @@
   --danger-text: #fff8f5;
   --line: rgba(29, 26, 22, 0.1);
   --line-strong: rgba(29, 26, 22, 0.16);
-  --checker: rgba(0, 0, 0, 0.045);
+  --checker: rgba(0, 0, 0, 0.08);
   --shadow: 0 18px 40px rgba(70, 48, 16, 0.12);
 }
 
@@ -271,6 +271,51 @@ textarea { user-select: text; }
   color: var(--text-muted);
 }
 
+.photo-block {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.photo-block h2 {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.tool-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+
+.tool-actions {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+}
+
+.tool-actions .btn,
+.btn-block {
+  height: 28px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.tool-actions .btn { flex: 1; min-width: 0; }
+
+.btn-block { width: 100%; }
+
 .viewport {
   position: relative;
   min-width: 0;
@@ -323,6 +368,8 @@ textarea { user-select: text; }
   display: block;
   -webkit-user-drag: none;
 }
+
+.photo-layer { z-index: 0; }
 
 /* Pigment coverage only. The visible coat is composited onto .display-layer. */
 .tint-store { visibility: hidden; }
@@ -733,6 +780,14 @@ textarea { user-select: text; }
   .history-row { flex-direction: row; }
 
   .tool-slider { width: 128px; flex: none; }
+
+  .photo-block {
+    width: 210px;
+    flex: none;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+    padding: 0 0 0 10px;
+  }
 
   .panel {
     border-left: 0;

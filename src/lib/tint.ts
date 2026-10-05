@@ -56,7 +56,10 @@ export function compositeSurface(
 ): void {
   for (let i = 0; i < tint.length; i += 4) {
     const alpha = tint[i + 3] / 255
-    if (alpha <= 0.001) {
+    const photoA = photo[i + 3] / 255
+    // A cutout pixel stays empty so the tint cannot cover the checkerboard.
+    // An opaque photo keeps the previous coat: full strength, photo alpha 255.
+    if (alpha <= 0.001 || photoA <= 0.001) {
       out[i] = 0
       out[i + 1] = 0
       out[i + 2] = 0
@@ -70,7 +73,7 @@ export function compositeSurface(
     out[i] = pr + (tr - pr) * alpha
     out[i + 1] = pg + (tg - pg) * alpha
     out[i + 2] = pb + (tb - pb) * alpha
-    out[i + 3] = 255
+    out[i + 3] = photoA >= 0.999 ? 255 : Math.round(255 * photoA)
   }
 }
 
@@ -79,7 +82,8 @@ export function compositeSurface(
  * not the bright or dark shade the photo's lighting created. An unpainted
  * pixel returns the photo color.
  */
-export function sampleTintHex(tint: Uint8ClampedArray, photo: Uint8ClampedArray): string {
+export function sampleTintHex(tint: Uint8ClampedArray, photo: Uint8ClampedArray): string | null {
+  if (photo[3] <= 8) return null
   if (tint[3] > 0) return rgbToHex(tint[0], tint[1], tint[2])
   return rgbToHex(photo[0], photo[1], photo[2])
 }

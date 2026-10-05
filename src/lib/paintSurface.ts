@@ -1,3 +1,5 @@
+import { clampCutoutStrength, removeBackdrop } from './cutout'
+import { clampPhotoScale, fitPhotoScale } from './photoScale'
 import { compositeSurface, sampleTintHex } from './tint'
 import {
   MAX_HISTORY,
@@ -12,12 +14,18 @@ import {
   type Point,
   type Stroke,
 } from './paint'
-import type { HistoryState, LoadedPhoto, Tool } from '../types'
+import type { HistoryState, LoadedPhoto, PhotoState, Tool } from '../types'
 
 export type ViewState = {
   x: number
   y: number
+  /** View zoom. This does not resize the photo; contentScale does. */
   z: number
+  contentScale: number
+}
+
+export type CutoutResult = {
+  removedRatio: number
 }
 
 export type SurfaceConfig = {
@@ -30,6 +38,7 @@ export type SurfaceConfig = {
 
 type SurfaceEvents = {
   view: (view: ViewState) => void
+  photo: (photo: PhotoState) => void
   history: (history: HistoryState) => void
   pick: (hex: string, commit: boolean) => void
   stroke: (hex: string) => void
@@ -69,6 +78,7 @@ type Session = DrawSession | PanSession | PickSession
 
 const MIN_ZOOM = 0.02
 const MAX_ZOOM = 32
+const CUTOUT_MAX_SIDE = 1600
 
 function context2d(
   canvas: HTMLCanvasElement,
@@ -83,16 +93,21 @@ function context2d(
  * and light stay in the picture. Undo stores strokes and replays them.
  * Full-image snapshots would be far too heavy.
  *
+ * Photo scale (`contentScale`) resizes the picture on the stage. Pan and zoom move
+ * the view and do not resample the photo. Backdrop removal keeps the original on
+ * `source` and writes transparency into the sample the tint is shaded with.
+ *
  * TODO(section-layers): this is one paint layer. Edge and section layers are later.
- * TODO(image-scale): fit letterboxes the photo. It does not rescale a side that is too small.
- * TODO(background-remover): the photo is still the untouched base; there is no cutout.
- * TODO(view-backgrounds): no replacement backdrop until a cutout exists.
+ * TODO(view-backgrounds): no replacement backdrop. The viewport checkerboard shows through a cutout.
  * TODO(multi-angle): one photo fills the stage. A 2×2 layout is later.
  * TODO(lighting): no lighting presets on the preview.
  */
 export class PaintSurface {
+  private readonly source = document.createElement('canvas')
+  private readonly work = document.createElement('canvas')
   private readonly backup = document.createElement('canvas')
   private readonly sample = document.createElement('canvas')
+  private photoCtx: CanvasRenderingContext2D | null = null
   private tintCtx: CanvasRenderingContext2D | null = null
   private displayCtx: CanvasRenderingContext2D | null = null
   private sampleCtx: CanvasRenderingContext2D | null = null
@@ -103,6 +118,9 @@ export class PaintSurface {
   private ring: HTMLElement | null = null
   private pan = { x: 0, y: 0 }
   private zoom = 1
+  private contentScale = 1
+  private cutoutActive = false
+  private disposed = false
   private raf = 0
   private viewRaf = 0
   private fitAttempts = 0
@@ -113,6 +131,8 @@ export class PaintSurface {
   private space = false
 
   constructor(
+    /** Visible photo, including cutout transparency. The tint is shaded against this. */
+    private readonly photo: HTMLCanvasElement,
     /** Pigment and coverage. Hidden in the page; the photo shades it on display. */
     private readonly tint: HTMLCanvasElement,
     /** Visible coat. Transparent where the tint has not been painted. */
@@ -130,6 +150,7 @@ export class PaintSurface {
   }
 
   dispose(): void {
+    this.disposed = true
     this.viewport.removeEventListener('pointerdown', this.onPointerDown)
     this.viewport.removeEventListener('pointermove', this.onPointerMove)
     this.viewport.removeEventListener('pointerup', this.onPointerUp)
@@ -140,6 +161,8 @@ export class PaintSurface {
     if (this.raf) cancelAnimationFrame(this.raf)
     if (this.viewRaf) cancelAnimationFrame(this.viewRaf)
     this.session = null
+    this.image = null
+    this.hist = null
   }
 
   configure(config: SurfaceConfig): void {
@@ -169,13 +192,29 @@ export class PaintSurface {
     this.viewport.classList.remove('is-panning')
     this.image = image
     this.hist = null
+    this.cutoutActive = false
     this.clearDisplay()
     if (!image) {
+      this.contentScale = 1
+      this.photoCtx?.clearRect(0, 0, this.photo.width, this.photo.height)
       this.emitHistory()
+      this.emitPhoto()
+      this.emitView()
       return
     }
     this.allocate(image.width, image.height)
-    this.sampleCtx?.drawImage(image.element, 0, 0)
+    const sourceCtx = context2d(this.source)
+    if (!sourceCtx || !this.sampleCtx || !this.photoCtx) {
+      this.emit.error('Could not prepare that photo.')
+      this.emitHistory()
+      this.emitPhoto()
+      return
+    }
+    sourceCtx.setTransform(1, 0, 0, 1, 0, 0)
+    sourceCtx.clearRect(0, 0, image.width, image.height)
+    sourceCtx.drawImage(image.element, 0, 0, image.width, image.height)
+    this.copySourceToSample()
+    this.presentPhoto()
     this.hist = {
       width: image.width,
       height: image.height,
@@ -186,10 +225,40 @@ export class PaintSurface {
     }
     this.emitHistory()
     this.fitAttempts = 0
-    this.fit()
+    this.autoScale()
   }
 
+  /** Fit the picture by changing photo scale, then frame the view around it. */
+  autoScale(): void {
+    if (this.disposed) return
+    const image = this.image
+    if (!image) return
+    const width = this.viewport.clientWidth
+    const height = this.viewport.clientHeight
+    if (width < 10 || height < 10) {
+      if (this.fitAttempts < 8) {
+        this.fitAttempts += 1
+        requestAnimationFrame(() => this.autoScale())
+      }
+      return
+    }
+    this.fitAttempts = 0
+    const fitted = fitPhotoScale(width, height, image.width, image.height)
+    this.contentScale = fitted
+    const displayW = image.width * fitted
+    const displayH = image.height * fitted
+    let zoom = this.frameZoom(displayW, displayH)
+    if (!Number.isFinite(zoom)) zoom = 1
+    if (Math.abs(zoom - 1) < 0.015) zoom = 1
+    this.zoom = zoom
+    this.center(displayW, displayH)
+    this.emitView()
+    this.emitPhoto()
+  }
+
+  /** Frame the current picture. Does not change photo scale. */
   fit(): void {
+    if (this.disposed) return
     const image = this.image
     if (!image) return
     const width = this.viewport.clientWidth
@@ -202,15 +271,96 @@ export class PaintSurface {
       return
     }
     this.fitAttempts = 0
-    const pad = 48
-    const scale = Math.min((width - pad) / image.width, (height - pad) / image.height)
-    const next = Math.min(MAX_ZOOM, Math.max(scale, 0.01))
-    this.zoom = next
+    const displayW = image.width * this.contentScale
+    const displayH = image.height * this.contentScale
+    const zoom = this.frameZoom(displayW, displayH)
+    if (!Number.isFinite(zoom)) return
+    this.zoom = zoom
+    this.center(displayW, displayH)
+    this.emitView()
+  }
+
+  /** Resize the picture. View zoom stays, anchored at the center of the canvas. */
+  setContentScale(next: number): void {
+    const image = this.image
+    if (!image || this.disposed) return
+    const scale = clampPhotoScale(next)
+    const prev = this.contentScale
+    if (Math.abs(scale - prev) < 1e-6) return
+    const cx = this.viewport.clientWidth / 2
+    const cy = this.viewport.clientHeight / 2
+    const localX = (cx - this.pan.x) / this.zoom
+    const localY = (cy - this.pan.y) / this.zoom
+    const ratio = scale / prev
+    this.contentScale = scale
     this.pan = {
-      x: (width - image.width * next) / 2,
-      y: (height - image.height * next) / 2,
+      x: cx - localX * ratio * this.zoom,
+      y: cy - localY * ratio * this.zoom,
     }
     this.emitView()
+    this.emitPhoto()
+  }
+
+  /**
+   * Cut the backdrop from a copy of the photo. Another strength rebuilds from
+   * the original, and reset restores it. Paint strokes stay in the tint layer.
+   */
+  applyCutout(strength: number): CutoutResult | null {
+    if (!this.image || !this.sampleCtx || this.disposed) return null
+    const level = clampCutoutStrength(strength)
+    const sourceW = this.source.width
+    const sourceH = this.source.height
+    if (sourceW < 1 || sourceH < 1) return null
+    const down = Math.min(1, CUTOUT_MAX_SIDE / Math.max(sourceW, sourceH))
+    const workW = Math.max(1, Math.round(sourceW * down))
+    const workH = Math.max(1, Math.round(sourceH * down))
+    this.work.width = workW
+    this.work.height = workH
+    const workCtx = context2d(this.work, { willReadFrequently: true })
+    if (!workCtx) {
+      this.emit.error('Could not build a cutout.')
+      return null
+    }
+    workCtx.setTransform(1, 0, 0, 1, 0, 0)
+    workCtx.imageSmoothingEnabled = true
+    workCtx.imageSmoothingQuality = 'high'
+    workCtx.clearRect(0, 0, workW, workH)
+    workCtx.drawImage(this.source, 0, 0, workW, workH)
+    let stats: CutoutResult
+    try {
+      const pixels = workCtx.getImageData(0, 0, workW, workH)
+      stats = removeBackdrop({ data: pixels.data, width: workW, height: workH }, level)
+      workCtx.putImageData(pixels, 0, 0)
+    } catch {
+      this.emit.error('Could not read the photo for a cutout.')
+      return null
+    }
+    this.session = null
+    this.viewport.classList.remove('is-panning')
+    this.copySourceToSample()
+    const sample = this.sampleCtx
+    sample.save()
+    sample.imageSmoothingEnabled = false
+    sample.globalCompositeOperation = 'destination-in'
+    sample.drawImage(this.work, 0, 0, sourceW, sourceH)
+    sample.restore()
+    this.cutoutActive = true
+    this.presentPhoto()
+    this.present(null)
+    this.emitPhoto()
+    return stats
+  }
+
+  /** Restore the photo from before backdrop removal. Paint strokes stay. */
+  resetCutout(): void {
+    if (!this.cutoutActive || this.disposed) return
+    this.session = null
+    this.viewport.classList.remove('is-panning')
+    this.cutoutActive = false
+    this.copySourceToSample()
+    this.presentPhoto()
+    this.present(null)
+    this.emitPhoto()
   }
 
   undo(): void {
@@ -242,6 +392,8 @@ export class PaintSurface {
 
   private allocate(width: number, height: number): void {
     this.presentFailed = false
+    this.photo.width = width
+    this.photo.height = height
     this.tint.width = width
     this.tint.height = height
     this.display.width = width
@@ -250,9 +402,46 @@ export class PaintSurface {
     this.backup.height = height
     this.sample.width = width
     this.sample.height = height
+    this.source.width = width
+    this.source.height = height
+    this.photoCtx = context2d(this.photo)
     this.tintCtx = context2d(this.tint, { willReadFrequently: true })
     this.displayCtx = context2d(this.display)
     this.sampleCtx = context2d(this.sample, { willReadFrequently: true })
+  }
+
+  private copySourceToSample(): void {
+    const ctx = this.sampleCtx
+    if (!ctx) return
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.clearRect(0, 0, this.sample.width, this.sample.height)
+    ctx.drawImage(this.source, 0, 0)
+  }
+
+  private presentPhoto(): void {
+    const ctx = this.photoCtx
+    if (!ctx) return
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.clearRect(0, 0, this.photo.width, this.photo.height)
+    ctx.drawImage(this.sample, 0, 0)
+  }
+
+  private frameZoom(displayWidth: number, displayHeight: number): number {
+    const width = this.viewport.clientWidth
+    const height = this.viewport.clientHeight
+    if (width < 10 || height < 10 || displayWidth < 1 || displayHeight < 1) return Number.NaN
+    const innerW = Math.max(32, width - 48)
+    const innerH = Math.max(32, height - 48)
+    return clamp(Math.min(innerW / displayWidth, innerH / displayHeight), MIN_ZOOM, MAX_ZOOM)
+  }
+
+  private center(displayWidth: number, displayHeight: number): void {
+    this.pan = {
+      x: (this.viewport.clientWidth - displayWidth * this.zoom) / 2,
+      y: (this.viewport.clientHeight - displayHeight * this.zoom) / 2,
+    }
   }
 
   private onContextMenu = (event: Event): void => {
@@ -311,7 +500,7 @@ export class PaintSurface {
     const stroke: Stroke = {
       tool: this.tool,
       color: this.color,
-      size: Math.max(this.brushSize / this.zoom, 0.5),
+      size: Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5),
       opacity: this.opacity,
       points: [point],
     }
@@ -530,6 +719,14 @@ export class PaintSurface {
     }
   }
 
+  private imagePixelsPerScreenPixel(): number {
+    const rect = this.display.getBoundingClientRect()
+    if (rect.width < 1 || this.display.width < 1) {
+      return 1 / Math.max(0.0001, this.zoom * this.contentScale)
+    }
+    return this.display.width / rect.width
+  }
+
   private toImage(clientX: number, clientY: number): Point | null {
     const rect = this.display.getBoundingClientRect()
     if (rect.width < 1 || rect.height < 1) return null
@@ -579,7 +776,16 @@ export class PaintSurface {
   }
 
   private emitView(): void {
-    this.emit.view({ x: this.pan.x, y: this.pan.y, z: this.zoom })
+    this.emit.view({
+      x: this.pan.x,
+      y: this.pan.y,
+      z: this.zoom,
+      contentScale: this.contentScale,
+    })
+  }
+
+  private emitPhoto(): void {
+    this.emit.photo({ contentScale: this.contentScale, cutoutActive: this.cutoutActive })
   }
 
   private emitHistory(): void {
