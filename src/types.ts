@@ -8,6 +8,8 @@ export type Tool =
   | 'wand'
   | 'lasso'
   | 'maskBrush'
+  | 'edgeAdd'
+  | 'edgeErase'
 
 /** How a wand, lasso, or mask brush writes into a section. */
 export type MaskMode = 'new' | 'add' | 'subtract'

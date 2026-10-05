@@ -32,6 +32,10 @@ type ToolStripProps = {
   onRemoveBackdrop: () => void
   onRepairCutout: () => void
   onResetCutout: () => void
+  edgeSnap: boolean
+  snapStrength: number
+  onEdgeSnap: (enabled: boolean) => void
+  onSnapStrength: (strength: number) => void
 }
 
 const TOOLS: { id: Tool; label: string; shortcut: string; icon: typeof IconBrush }[] = [
@@ -64,6 +68,10 @@ export function ToolStrip({
   onRemoveBackdrop,
   onRepairCutout,
   onResetCutout,
+  edgeSnap,
+  snapStrength,
+  onEdgeSnap,
+  onSnapStrength,
 }: ToolStripProps) {
   return (
     <aside className="toolstrip" aria-label="Tools">
@@ -112,6 +120,34 @@ export function ToolStrip({
         />
         <span className="slider-value">{Math.round(opacity * 100)}%</span>
       </label>
+      <section className="photo-block" aria-label="Stay inside lines">
+        <h2>Assist</h2>
+        <label className="edge-toggle">
+          <input
+            type="checkbox"
+            checked={edgeSnap}
+            onChange={(event) => onEdgeSnap(event.target.checked)}
+          />
+          <span>Stay inside lines</span>
+        </label>
+        <label className="tool-slider">
+          <span>Hug</span>
+          <input
+            type="range"
+            min={25}
+            max={100}
+            step={1}
+            value={Math.round(snapStrength * 100)}
+            aria-label="Edge hug strength"
+            disabled={!edgeSnap}
+            onChange={(event) => onSnapStrength(Number(event.target.value) / 100)}
+          />
+          <span className="slider-value">{Math.round(snapStrength * 100)}%</span>
+        </label>
+        <p className="tool-note">
+          Softly hugs sculpt ridges and the active section. A firm stroke can still cross. S toggles it. The wand still selects plates.
+        </p>
+      </section>
       <div className="history-row">
         <button
           type="button"

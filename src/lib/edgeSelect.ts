@@ -6,10 +6,12 @@
  * thresholds and the wand walks across it. A sculpt seam is a sharp jump and
  * stays a thin edge. Growth never crosses those edges, and it is hard-gated
  * to the miniature (cutout alpha, and any border-connected backdrop that is
- * still opaque). Suggest and the edge overlay use the same Canny walls.
+ * still opaque). Suggest, the edge overlay, and edge snap use the same walls.
+ * Hand edits force a ridge on or off after Canny, and every consumer sees that.
  */
 
 import cvModule from '@techstark/opencv-js'
+import type { RidgeEdits } from './edgeEdits'
 
 const ALPHA_CUT = 16
 const WORK_SIDE = 1600
@@ -95,9 +97,10 @@ export function selectRegion(
   seedX: number,
   seedY: number,
   tolerance: number,
+  edits?: RidgeEdits | null,
 ): RegionMask | null {
   const map = buildEdgeMap(rgba, width, height)
-  return selectOnMap(map, rgba, seedX, seedY, tolerance)
+  return selectOnMap(map, rgba, seedX, seedY, tolerance, edits)
 }
 
 export function suggestRegions(
@@ -105,11 +108,12 @@ export function suggestRegions(
   width: number,
   height: number,
   tolerance: number,
+  edits?: RidgeEdits | null,
 ): Uint8Array[] {
   if (width < 8 || height < 8) return []
   const map = buildEdgeMap(rgba, width, height)
   if (map.subjectCount < 32) return []
-  return suggestOnMap(map, rgba, tolerance).map((entry) => entry.mask)
+  return suggestOnMap(map, rgba, tolerance, edits).map((entry) => entry.mask)
 }
 
 export function buildEdgeMap(rgba: Uint8ClampedArray, width: number, height: number): EdgeMap {
@@ -158,15 +162,61 @@ export function buildEdgeMap(rgba: Uint8ClampedArray, width: number, height: num
 }
 
 /** Full-resolution Canny walls at this tolerance. Same edges the wand starts from. */
+export type EdgeGuide = {
+  fullWidth: number
+  fullHeight: number
+  width: number
+  height: number
+  scale: number
+  /** 1 on a ridge the wand would stop on, including hand edits. */
+  wall: Uint8Array
+  /** 1 on the miniature. */
+  subject: Uint8Array
+}
+
+/** Coarse Canny walls at this tolerance, after hand-added and hand-erased ridges. */
+export function edgeGuide(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  tolerance: number,
+  edits?: RidgeEdits | null,
+): EdgeGuide {
+  if (width < 2 || height < 2) {
+    const count = Math.max(0, width * height)
+    return {
+      fullWidth: width,
+      fullHeight: height,
+      width: Math.max(0, width),
+      height: Math.max(0, height),
+      scale: 1,
+      wall: new Uint8Array(count),
+      subject: new Uint8Array(count),
+    }
+  }
+  const map = buildEdgeMap(rgba, width, height)
+  const wall = wallsFor(map, tolerance, edits)
+  return {
+    fullWidth: width,
+    fullHeight: height,
+    width: map.width,
+    height: map.height,
+    scale: map.scale,
+    wall,
+    subject: map.subject,
+  }
+}
+
 export function selectionEdges(
   rgba: Uint8ClampedArray,
   width: number,
   height: number,
   tolerance: number,
+  edits?: RidgeEdits | null,
 ): Uint8Array {
   if (width < 2 || height < 2) return new Uint8Array(Math.max(0, width * height))
   const map = buildEdgeMap(rgba, width, height)
-  const walls = wallsFor(map, tolerance)
+  const walls = wallsFor(map, tolerance, edits)
   const full = new Uint8Array(width * height)
   const { scale } = map
   for (let y = 0; y < height; y += 1) {
@@ -300,6 +350,7 @@ function selectOnMap(
   seedX: number,
   seedY: number,
   tolerance: number,
+  edits?: RidgeEdits | null,
 ): RegionMask | null {
   let sx = Math.floor(seedX)
   let sy = Math.floor(seedY)
@@ -314,6 +365,7 @@ function selectOnMap(
   }
 
   const blurred = blurSubject(map)
+  const force = coarsenRidges(map, edits)
   try {
     let { low, high } = cannyPair(tolerance)
     const smallPhoto = map.subjectCount < 8000
@@ -322,7 +374,7 @@ function selectOnMap(
     let tooBig: RegionMask | null = null
     let tooSmall: RegionMask | null = null
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      const walls = cannyWalls(blurred, map, low, high)
+      const walls = cannyWalls(blurred, map, low, high, force)
       const seed = placeSeed(map, walls, sx, sy)
       if (seed < 0) {
         low = Math.min(200, low * 1.4)
@@ -417,8 +469,13 @@ function coversClick(region: RegionMask, map: EdgeMap, sx: number, sy: number): 
   return true
 }
 
-function suggestOnMap(map: EdgeMap, rgba: Uint8ClampedArray, tolerance: number): RegionMask[] {
-  const walls = wallsFor(map, tolerance)
+function suggestOnMap(
+  map: EdgeMap,
+  rgba: Uint8ClampedArray,
+  tolerance: number,
+  edits?: RidgeEdits | null,
+): RegionMask[] {
+  const walls = wallsFor(map, tolerance, edits)
   const labels = labelOpen(map, walls)
   mergeFragments(labels, map)
   const masks = masksFromLabels(labels, map)
@@ -446,14 +503,69 @@ function cannyPair(tolerance: number): { low: number; high: number } {
   return { low, high }
 }
 
-function wallsFor(map: EdgeMap, tolerance: number): Uint8Array {
+function wallsFor(map: EdgeMap, tolerance: number, edits?: RidgeEdits | null): Uint8Array {
   const blurred = blurSubject(map)
   try {
     const { low, high } = cannyPair(tolerance)
-    return cannyWalls(blurred, map, low, high)
+    return cannyWalls(blurred, map, low, high, coarsenRidges(map, edits))
   } finally {
     blurred.delete()
   }
+}
+
+/**
+ * Coarse force map. 1 = user ridge, 2 = user suppression, 0 = leave Canny alone.
+ * Add wins inside a cell that contains both.
+ */
+function coarsenRidges(map: EdgeMap, edits?: RidgeEdits | null): Uint8Array | null {
+  if (!edits) return null
+  const count = map.fullWidth * map.fullHeight
+  if (edits.add.length !== count || edits.erase.length !== count) return null
+  let touched = false
+  for (let i = 0; i < count; i += 1) {
+    if (edits.add[i] !== 0 || edits.erase[i] !== 0) {
+      touched = true
+      break
+    }
+  }
+  if (!touched) return null
+  const force = new Uint8Array(map.width * map.height)
+  const { scale, width, height, fullWidth, fullHeight } = map
+  for (let y = 0; y < fullHeight; y += 1) {
+    const cy = Math.min(height - 1, Math.floor(y / scale))
+    const row = y * fullWidth
+    const coarseRow = cy * width
+    for (let x = 0; x < fullWidth; x += 1) {
+      const pixel = row + x
+      const index = coarseRow + Math.min(width - 1, Math.floor(x / scale))
+      if (edits.add[pixel] !== 0) force[index] = 1
+      else if (force[index] === 0 && edits.erase[pixel] !== 0) force[index] = 2
+    }
+  }
+  return dilateForce(force, width, height)
+}
+
+/** A painted or erased ridge covers the cell beside it, so another threshold cannot revive a one-pixel seam. */
+function dilateForce(force: Uint8Array, width: number, height: number): Uint8Array {
+  const next = force.slice()
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const kind = force[y * width + x]
+      if (kind === 0) continue
+      for (let dy = -1; dy <= 1; dy += 1) {
+        const ny = y + dy
+        if (ny < 0 || ny >= height) continue
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const nx = x + dx
+          if (nx < 0 || nx >= width) continue
+          const index = ny * width + nx
+          if (kind === 1) next[index] = 1
+          else if (next[index] !== 1) next[index] = 2
+        }
+      }
+    }
+  }
+  return next
 }
 
 /**
@@ -511,7 +623,13 @@ function blurSubject(map: EdgeMap): CvMat {
   return blurred
 }
 
-function cannyWalls(blurred: CvMat, map: EdgeMap, low: number, high: number): Uint8Array {
+function cannyWalls(
+  blurred: CvMat,
+  map: EdgeMap,
+  low: number,
+  high: number,
+  force?: Uint8Array | null,
+): Uint8Array {
   const edges = new cv.Mat()
   const dx = new cv.Mat()
   const dy = new cv.Mat()
@@ -538,6 +656,13 @@ function cannyWalls(blurred: CvMat, map: EdgeMap, low: number, high: number): Ui
       const on = map.subject[i] !== 0 && src[i] !== 0 && !rimEcho(dx, dy, rim, i, high)
       walls[i] = on ? 1 : 0
       map.edge[i] = on ? 255 : 0
+    }
+    if (force && force.length === walls.length) {
+      for (let i = 0; i < walls.length; i += 1) {
+        if (force[i] === 2) walls[i] = 0
+        else if (force[i] === 1 && map.subject[i] !== 0) walls[i] = 1
+        map.edge[i] = walls[i] ? 255 : 0
+      }
     }
     return walls
   } finally {

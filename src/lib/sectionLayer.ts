@@ -7,6 +7,7 @@ import {
   proposeSectionMasks,
   type MaskPoint,
 } from './sections'
+import type { RidgeEdits } from './edgeEdits'
 import type { MaskMode, SectionCategory, SectionInfo } from '../types'
 
 /**
@@ -162,9 +163,10 @@ export class SectionLayer {
     y: number,
     tolerance: number,
     mode: MaskMode,
+    edits?: RidgeEdits | null,
   ): SectionResult {
     this.cancelPreview()
-    const flooded = floodMask(rgba, this.width, this.height, x, y, tolerance)
+    const flooded = floodMask(rgba, this.width, this.height, x, y, tolerance, edits)
     if (!flooded || flooded.count < 1) return { ok: false, reason: 'That spot is empty. Click the miniature.' }
     return this.applyFull(flooded.mask, mode)
   }
@@ -177,9 +179,9 @@ export class SectionLayer {
     return this.applyFull(filled.mask, mode)
   }
 
-  propose(rgba: Uint8ClampedArray): number {
+  propose(rgba: Uint8ClampedArray, edits?: RidgeEdits | null): number {
     this.cancelPreview()
-    const masks = proposeSectionMasks(rgba, this.width, this.height)
+    const masks = proposeSectionMasks(rgba, this.width, this.height, edits)
     if (masks.length < 2) return 0
     const activeBefore = this.activeId
     const index = this.sections.length

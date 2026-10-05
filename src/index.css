@@ -359,7 +359,9 @@ textarea { user-select: text; }
 .viewport[data-tool="eraseBackdrop"]:not([data-space="true"]):not(.is-panning),
 .viewport[data-tool="wand"]:not([data-space="true"]):not(.is-panning),
 .viewport[data-tool="lasso"]:not([data-space="true"]):not(.is-panning),
-.viewport[data-tool="maskBrush"]:not([data-space="true"]):not(.is-panning) {
+.viewport[data-tool="maskBrush"]:not([data-space="true"]):not(.is-panning),
+.viewport[data-tool="edgeAdd"]:not([data-space="true"]):not(.is-panning),
+.viewport[data-tool="edgeErase"]:not([data-space="true"]):not(.is-panning) {
   cursor: crosshair;
 }
 
@@ -957,6 +959,101 @@ button.section-card:hover:not(:disabled),
 }
 
 .later strong { color: var(--text); font-weight: 600; }
+
+.catalog-picked { margin-top: 8px; }
+
+.catalog-search { margin-top: 8px; }
+
+.catalog-filters,
+.catalog-similar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.catalog-chip {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.catalog-similar .catalog-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.catalog-chip i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.28);
+}
+
+.catalog-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 280px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.catalog-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.catalog-row[aria-current="true"] {
+  border-color: var(--line-strong);
+  background: var(--bg);
+}
+
+.catalog-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.catalog-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-meta {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.catalog-detail {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.catalog-detail-name {
+  margin: 0;
+  font-weight: 600;
+}
+
+.catalog-detail-name span,
+.catalog-detail .catalog-meta {
+  display: block;
+  font-weight: 500;
+}
 
 .file-input {
   position: absolute;

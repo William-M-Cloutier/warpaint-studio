@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { displayHex, normalizeHex } from '../lib/color'
+import { RANGE_LABEL, type CatalogPaint } from '../lib/catalog'
 import { ROADMAP } from '../roadmap'
 import type { ColorScheme, SchemeColor } from '../types'
+import { CatalogBrowser } from './CatalogBrowser'
 import { IconPlus, IconTrash } from './Icons'
 
 type ColorPanelProps = {
@@ -17,6 +19,8 @@ type ColorPanelProps = {
   onSave: () => void
   onLoad: (scheme: ColorScheme) => void
   onAskDelete: (scheme: ColorScheme) => void
+  pickedPaint: CatalogPaint | null
+  onPickPaint: (paint: CatalogPaint) => void
 }
 
 function formatSaved(timestamp: number): string {
@@ -36,6 +40,8 @@ export function ColorPanel({
   onSave,
   onLoad,
   onAskDelete,
+  pickedPaint,
+  onPickPaint,
 }: ColorPanelProps) {
   const [hexDraft, setHexDraft] = useState(displayHex(color))
 
@@ -72,6 +78,11 @@ export function ColorPanel({
           />
           <span className="current-swatch" style={{ background: color }} />
         </label>
+        {pickedPaint && pickedPaint.hex === color && (
+          <p className="hint catalog-picked">
+            {pickedPaint.name} · {RANGE_LABEL[pickedPaint.range]} {pickedPaint.line}
+          </p>
+        )}
         <form
           className="hex-row"
           onSubmit={(event) => {
@@ -89,6 +100,8 @@ export function ColorPanel({
           />
         </form>
       </section>
+
+      <CatalogBrowser pickedId={pickedPaint?.id ?? null} onPick={onPickPaint} />
 
       <section className="panel-section">
         <h2>Recent</h2>
@@ -122,7 +135,6 @@ export function ColorPanel({
         </p>
         {/* Palette labels stay free text. Armour, trim, undersuit, details, and custom labels live on sections. */}
         {/* TODO(paint-suggestions): suggest highlights and shades from the base color. */}
-        {/* TODO(paint-catalog): Citadel and other ranges, with quality and comparison notes, are not wired up. */}
         {/* TODO(paint-mix): mix two paints by ratio. */}
         <button type="button" className="btn add-color" onClick={onAdd} disabled={alreadyInPalette}>
           <IconPlus />

@@ -7,7 +7,9 @@ import { TopBar } from './components/TopBar'
 import { ToolStrip } from './components/ToolStrip'
 import { useSchemes } from './hooks/useSchemes'
 import { useTheme } from './hooks/useTheme'
+import { paintById } from './lib/catalog'
 import { createId, normalizeHex, rememberColor } from './lib/color'
+import { DEFAULT_SNAP_STRENGTH } from './lib/edgeSnap'
 import { decodeImage, isImageFile, photoTooLarge } from './lib/imageFile'
 import { loadPrefs, savePrefs } from './lib/storage'
 import type {
@@ -72,6 +74,10 @@ export function App() {
   const [maskMode, setMaskMode] = useState<MaskMode>('new')
   const [tolerance, setTolerance] = useState(48)
   const [showEdges, setShowEdges] = useState(false)
+  const [edgeSnap, setEdgeSnap] = useState(false)
+  const [snapStrength, setSnapStrength] = useState(DEFAULT_SNAP_STRENGTH)
+  const [ridgesActive, setRidgesActive] = useState(false)
+  const [pickedId, setPickedId] = useState<string | null>(null)
   const [proposeBusy, setProposeBusy] = useState(false)
 
   const stageRef = useRef<StageHandle>(null)
@@ -128,6 +134,15 @@ export function App() {
     const next = normalizeHex(hex)
     if (!next) return
     setRecent((current) => rememberColor(current, next))
+  }, [])
+
+  const setBrushColor = useCallback((hex: string) => {
+    setColor(hex)
+    setPickedId((id) => {
+      if (!id) return null
+      const paint = paintById(id)
+      return paint && paint.hex === hex ? id : null
+    })
   }, [])
 
   const loadFile = useCallback(
@@ -262,6 +277,7 @@ export function App() {
       else if (key === 'w') setTool('wand')
       else if (key === 'l') setTool('lasso')
       else if (key === 'm') setTool('maskBrush')
+      else if (key === 's') setEdgeSnap((enabled) => !enabled)
       else if (event.key === '[') setBrushSize((size) => clampSize(size - (event.shiftKey ? 10 : 2)))
       else if (event.key === ']') setBrushSize((size) => clampSize(size + (event.shiftKey ? 10 : 2)))
     }
@@ -308,7 +324,10 @@ export function App() {
 
   const loadScheme = (scheme: ColorScheme) => {
     setPalette(scheme.colors.map((entry) => ({ ...entry, id: createId() })))
-    if (scheme.colors[0]) setColor(scheme.colors[0].hex)
+    if (scheme.colors[0]) {
+      setColor(scheme.colors[0].hex)
+      setPickedId(null)
+    }
     flash(`Loaded “${scheme.name}”`)
   }
 
@@ -413,6 +432,10 @@ export function App() {
             stageRef.current?.resetCutout()
             flash('Cutout reset')
           }}
+          edgeSnap={edgeSnap}
+          snapStrength={snapStrength}
+          onEdgeSnap={setEdgeSnap}
+          onSnapStrength={setSnapStrength}
         />
         <CanvasStage
           ref={stageRef}
@@ -424,10 +447,12 @@ export function App() {
           spaceHeld={spaceHeld}
           tolerance={tolerance}
           showEdges={showEdges}
+          edgeSnap={edgeSnap}
+          snapStrength={snapStrength}
           maskMode={maskMode}
           sectionChip={sectionChip}
           onPickColor={(hex, commit) => {
-            setColor(hex)
+            setBrushColor(hex)
             if (commit) remember(hex)
           }}
           onStroke={remember}
@@ -436,6 +461,7 @@ export function App() {
           onSections={onSections}
           onError={flash}
           onBrowse={() => fileRef.current?.click()}
+          onRidges={setRidgesActive}
         />
         <div className="side-stack">
         <SectionPanel
@@ -450,7 +476,10 @@ export function App() {
           onTool={setTool}
           onMaskMode={setMaskMode}
           onTolerance={setTolerance}
-          onShowEdges={setShowEdges}
+          onShowEdges={(value) => {
+            setShowEdges(value)
+            if (!value && (tool === 'edgeAdd' || tool === 'edgeErase')) setTool('brush')
+          }}
           onSelect={(id) => stageRef.current?.selectSection(id)}
           onRename={(id, name) => stageRef.current?.renameSection(id, name)}
           onCategory={labelSection}
@@ -458,18 +487,26 @@ export function App() {
           onLocked={(id, locked) => stageRef.current?.setSectionLocked(id, locked)}
           onDelete={(id) => stageRef.current?.deleteSection(id)}
           onPropose={proposeSections}
+          hasRidges={ridgesActive}
+          onRidgeTool={(next) => {
+            setShowEdges(true)
+            setTool(next)
+          }}
+          onClearRidges={() => stageRef.current?.clearRidges()}
         />
         <ColorPanel
           color={color}
           recent={recent}
           palette={palette}
           schemes={schemes}
-          onColor={setColor}
+          onColor={setBrushColor}
           onRemember={remember}
           onAdd={() => {
+            const picked = pickedId ? paintById(pickedId) : null
+            const label = picked && picked.hex === color ? picked.name.slice(0, 40) : ''
             setPalette((current) => {
               if (current.some((entry) => entry.hex === color)) return current
-              return [...current, { id: createId(), hex: color, label: '' }]
+              return [...current, { id: createId(), hex: color, label }]
             })
           }}
           onLabel={(id, label) => {
@@ -481,6 +518,12 @@ export function App() {
           onSave={openSave}
           onLoad={loadScheme}
           onAskDelete={(scheme) => setDialog({ type: 'delete', scheme })}
+          pickedPaint={pickedId ? paintById(pickedId) : null}
+          onPickPaint={(paint) => {
+            setColor(paint.hex)
+            setPickedId(paint.id)
+            remember(paint.hex)
+          }}
         />
         </div>
       </div>
