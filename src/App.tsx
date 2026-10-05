@@ -1,0 +1,486 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { CanvasStage, type StageHandle } from './components/CanvasStage'
+import { ColorPanel } from './components/ColorPanel'
+import { Dialog } from './components/Dialog'
+import { TopBar } from './components/TopBar'
+import { ToolStrip } from './components/ToolStrip'
+import { useSchemes } from './hooks/useSchemes'
+import { useTheme } from './hooks/useTheme'
+import { createId, normalizeHex, rememberColor } from './lib/color'
+import { decodeImage, isImageFile, photoTooLarge } from './lib/imageFile'
+import { loadPrefs, savePrefs } from './lib/storage'
+import type { ColorScheme, HistoryState, LoadedPhoto, SchemeColor, Tool } from './types'
+
+// TODO(tutorial): an in-app tutorial comes near the end, after this workflow settles.
+
+type DialogState =
+  | { type: 'save' }
+  | { type: 'delete'; scheme: ColorScheme }
+  | { type: 'replace'; file: File }
+  | null
+
+type Notice = { id: number; text: string }
+
+const EMPTY_HISTORY: HistoryState = { canUndo: false, canRedo: false, hasPaint: false }
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
+function isFileDrag(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types ?? []).includes('Files')
+}
+
+export function App() {
+  const { theme, toggleTheme } = useTheme()
+  const { schemes, saveScheme, deleteScheme } = useSchemes()
+  const initialPrefs = useRef(loadPrefs())
+  const [tool, setTool] = useState<Tool>('brush')
+  const [color, setColor] = useState(initialPrefs.current.color)
+  const [recent, setRecent] = useState(initialPrefs.current.recent)
+  const [brushSize, setBrushSize] = useState(initialPrefs.current.brushSize)
+  const [opacity, setOpacity] = useState(initialPrefs.current.opacity)
+  const [palette, setPalette] = useState<SchemeColor[]>([])
+  const [image, setImage] = useState<LoadedPhoto | null>(null)
+  const [history, setHistory] = useState<HistoryState>(EMPTY_HISTORY)
+  const [spaceHeld, setSpaceHeld] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const [dialog, setDialog] = useState<DialogState>(null)
+  const [draftName, setDraftName] = useState('Untitled scheme')
+  const [savePreview, setSavePreview] = useState<SchemeColor[]>([])
+  const [notice, setNotice] = useState<Notice | null>(null)
+
+  const stageRef = useRef<StageHandle>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const nameRef = useRef<HTMLInputElement>(null)
+  const imageRef = useRef(image)
+  const dialogRef = useRef(dialog)
+  imageRef.current = image
+  dialogRef.current = dialog
+
+  const flash = useCallback((text: string) => {
+    setNotice({ id: Date.now(), text })
+  }, [])
+
+  useEffect(() => {
+    savePrefs({ color, recent, brushSize, opacity })
+  }, [color, recent, brushSize, opacity])
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(null), 2800)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  useEffect(() => {
+    return () => {
+      if (imageRef.current) URL.revokeObjectURL(imageRef.current.url)
+    }
+  }, [])
+
+  const onHistory = useCallback((next: HistoryState) => {
+    setHistory((current) =>
+      current.canUndo === next.canUndo &&
+      current.canRedo === next.canRedo &&
+      current.hasPaint === next.hasPaint
+        ? current
+        : next,
+    )
+  }, [])
+
+  const remember = useCallback((hex: string) => {
+    const next = normalizeHex(hex)
+    if (!next) return
+    setRecent((current) => rememberColor(current, next))
+  }, [])
+
+  const loadFile = useCallback(
+    async (file: File) => {
+      const url = URL.createObjectURL(file)
+      try {
+        const element = await decodeImage(url)
+        const width = element.naturalWidth
+        const height = element.naturalHeight
+        if (width < 1 || height < 1) throw new Error('empty')
+        if (photoTooLarge(width, height)) {
+          URL.revokeObjectURL(url)
+          flash('That photo is too large to paint on. Try one under 24 megapixels.')
+          return
+        }
+        const next = { url, name: file.name, width, height, element }
+        const previousUrl = imageRef.current?.url
+        if (previousUrl) URL.revokeObjectURL(previousUrl)
+        setImage(next)
+        setHistory(EMPTY_HISTORY)
+        flash(`Loaded ${file.name}`)
+      } catch {
+        URL.revokeObjectURL(url)
+        flash('Could not read that image. Use a PNG, JPEG, WebP, or GIF.')
+      }
+    },
+    [flash],
+  )
+
+  const requestLoad = useCallback(
+    (file: File) => {
+      if (!isImageFile(file)) {
+        flash('Choose a PNG, JPEG, WebP, or GIF photo.')
+        return
+      }
+      if (history.hasPaint) {
+        setDialog({ type: 'replace', file })
+        return
+      }
+      void loadFile(file)
+    },
+    [flash, history.hasPaint, loadFile],
+  )
+
+  const requestLoadRef = useRef(requestLoad)
+  requestLoadRef.current = requestLoad
+
+  useEffect(() => {
+    let depth = 0
+    const onDragEnter = (event: DragEvent) => {
+      if (!isFileDrag(event)) return
+      event.preventDefault()
+      depth += 1
+      setDragging(true)
+    }
+    const onDragOver = (event: DragEvent) => {
+      if (!isFileDrag(event)) return
+      event.preventDefault()
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+    }
+    const onDragLeave = (event: DragEvent) => {
+      if (!isFileDrag(event)) return
+      depth = Math.max(0, depth - 1)
+      if (depth === 0) setDragging(false)
+    }
+    const onDrop = (event: DragEvent) => {
+      if (!isFileDrag(event)) return
+      event.preventDefault()
+      depth = 0
+      setDragging(false)
+      const files = event.dataTransfer?.files
+      const file = files?.[0]
+      if (!file) return
+      if ((files?.length ?? 0) > 1) flash('Using the first photo only.')
+      requestLoadRef.current(file)
+    }
+    window.addEventListener('dragenter', onDragEnter)
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('dragleave', onDragLeave)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter)
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('dragleave', onDragLeave)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [flash])
+
+  useEffect(() => {
+    const releaseSpace = () => {
+      stageRef.current?.setSpace(false)
+      setSpaceHeld(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) return
+      if (dialogRef.current) return
+      if (event.code === 'Space') {
+        event.preventDefault()
+        if (event.repeat) return
+        stageRef.current?.setSpace(true)
+        setSpaceHeld(true)
+        return
+      }
+      const mod = event.metaKey || event.ctrlKey
+      const key = event.key.toLowerCase()
+      if (mod && key === 'z') {
+        event.preventDefault()
+        if (event.shiftKey) stageRef.current?.redo()
+        else stageRef.current?.undo()
+        return
+      }
+      if (mod && key === 'y') {
+        event.preventDefault()
+        stageRef.current?.redo()
+        return
+      }
+      if (mod || event.altKey) return
+      if (event.key === '0') {
+        event.preventDefault()
+        stageRef.current?.fit()
+        return
+      }
+      if (key === 'b' || key === '1') setTool('brush')
+      else if (key === 'e' || key === '2') setTool('eraser')
+      else if (key === 'i' || key === '3') setTool('eyedropper')
+      else if (key === 'h' || key === '4') setTool('pan')
+      else if (event.key === '[') setBrushSize((size) => clampSize(size - (event.shiftKey ? 10 : 2)))
+      else if (event.key === ']') setBrushSize((size) => clampSize(size + (event.shiftKey ? 10 : 2)))
+    }
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code === 'Space') releaseSpace()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', releaseSpace)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', releaseSpace)
+    }
+  }, [])
+
+  const colorsForSave = (): SchemeColor[] => {
+    if (palette.length > 0) return palette.map((entry) => ({ ...entry }))
+    const seen = new Set<string>()
+    const colors: SchemeColor[] = []
+    for (const hex of [color, ...recent]) {
+      if (seen.has(hex)) continue
+      seen.add(hex)
+      colors.push({ id: createId(), hex, label: '' })
+      if (colors.length >= 12) break
+    }
+    return colors
+  }
+
+  const openSave = () => {
+    setSavePreview(colorsForSave())
+    setDraftName('Untitled scheme')
+    setDialog({ type: 'save' })
+  }
+
+  const confirmSave = () => {
+    const name = draftName.trim()
+    if (!name || savePreview.length === 0) return
+    if (palette.length === 0) setPalette(savePreview)
+    saveScheme(name, savePreview)
+    setDialog(null)
+    flash(`Saved “${name}”`)
+  }
+
+  const loadScheme = (scheme: ColorScheme) => {
+    setPalette(scheme.colors.map((entry) => ({ ...entry, id: createId() })))
+    if (scheme.colors[0]) setColor(scheme.colors[0].hex)
+    flash(`Loaded “${scheme.name}”`)
+  }
+
+  const closeDialog = useCallback(() => setDialog(null), [])
+  const replaceName = schemes.find((scheme) => scheme.name.toLowerCase() === draftName.trim().toLowerCase())
+
+  return (
+    <div className="app">
+      <TopBar
+        theme={theme}
+        image={image}
+        canClear={history.hasPaint}
+        onUpload={() => fileRef.current?.click()}
+        onSave={openSave}
+        onClear={() => {
+          stageRef.current?.clearPaint()
+          flash('Paint cleared')
+        }}
+        onFit={() => stageRef.current?.fit()}
+        onToggleTheme={toggleTheme}
+      />
+      <div className="workspace">
+        <ToolStrip
+          tool={tool}
+          brushSize={brushSize}
+          opacity={opacity}
+          canUndo={history.canUndo}
+          canRedo={history.canRedo}
+          onTool={setTool}
+          onBrushSize={setBrushSize}
+          onOpacity={setOpacity}
+          onUndo={() => stageRef.current?.undo()}
+          onRedo={() => stageRef.current?.redo()}
+        />
+        <CanvasStage
+          ref={stageRef}
+          image={image}
+          tool={tool}
+          color={color}
+          brushSize={brushSize}
+          opacity={opacity}
+          spaceHeld={spaceHeld}
+          onPickColor={(hex, commit) => {
+            setColor(hex)
+            if (commit) remember(hex)
+          }}
+          onStroke={remember}
+          onHistory={onHistory}
+          onError={flash}
+          onBrowse={() => fileRef.current?.click()}
+        />
+        <ColorPanel
+          color={color}
+          recent={recent}
+          palette={palette}
+          schemes={schemes}
+          onColor={setColor}
+          onRemember={remember}
+          onAdd={() => {
+            setPalette((current) => {
+              if (current.some((entry) => entry.hex === color)) return current
+              return [...current, { id: createId(), hex: color, label: '' }]
+            })
+          }}
+          onLabel={(id, label) => {
+            setPalette((current) =>
+              current.map((entry) => (entry.id === id ? { ...entry, label: label.slice(0, 40) } : entry)),
+            )
+          }}
+          onRemove={(id) => setPalette((current) => current.filter((entry) => entry.id !== id))}
+          onSave={openSave}
+          onLoad={loadScheme}
+          onAskDelete={(scheme) => setDialog({ type: 'delete', scheme })}
+        />
+      </div>
+
+      <input
+        ref={fileRef}
+        className="file-input"
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          event.target.value = ''
+          if (file) requestLoad(file)
+        }}
+      />
+
+      {dragging && (
+        <div className="drop-overlay" role="status">
+          <div>
+            <strong>{image ? 'Drop to replace the photo' : 'Drop a photo to start'}</strong>
+            <p>{image ? 'Paint on the current picture will be cleared.' : 'One image. Paint stays on its own layer.'}</p>
+          </div>
+        </div>
+      )}
+
+      {notice && (
+        <div className="toast" role="status" key={notice.id}>
+          {notice.text}
+        </div>
+      )}
+
+      {dialog?.type === 'save' && (
+        <Dialog
+          title="Save scheme"
+          onClose={closeDialog}
+          focusRef={nameRef}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={closeDialog}>
+                Cancel
+              </button>
+              <button type="submit" form="save-scheme" className="btn btn-primary" disabled={!draftName.trim()}>
+                Save
+              </button>
+            </>
+          }
+        >
+          <form
+            id="save-scheme"
+            onSubmit={(event) => {
+              event.preventDefault()
+              confirmSave()
+            }}
+          >
+            <label className="field">
+              <span>Name</span>
+              <input
+                ref={nameRef}
+                value={draftName}
+                maxLength={60}
+                spellCheck={false}
+                onChange={(event) => setDraftName(event.target.value)}
+              />
+            </label>
+          </form>
+          <p className="hint">
+            {palette.length > 0
+              ? 'Saves the palette below.'
+              : 'The palette is empty, so this saves the current color and recent swatches.'}
+          </p>
+          {replaceName && <p className="warn">A scheme named “{replaceName.name}” will be replaced.</p>}
+          <div className="swatches dialog-swatches">
+            {savePreview.map((entry) => (
+              <span
+                key={entry.id}
+                className="swatch swatch-static"
+                style={{ background: entry.hex }}
+                title={entry.label || entry.hex}
+              />
+            ))}
+          </div>
+        </Dialog>
+      )}
+
+      {dialog?.type === 'delete' && (
+        <Dialog
+          title="Delete scheme"
+          onClose={closeDialog}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={closeDialog}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => {
+                  deleteScheme(dialog.scheme.id)
+                  setDialog(null)
+                  flash(`Deleted “${dialog.scheme.name}”`)
+                }}
+              >
+                Delete
+              </button>
+            </>
+          }
+        >
+          <p>Delete “{dialog.scheme.name}”? This only removes it from this browser.</p>
+        </Dialog>
+      )}
+
+      {dialog?.type === 'replace' && (
+        <Dialog
+          title="Replace photo"
+          onClose={closeDialog}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={closeDialog}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  const file = dialog.file
+                  setDialog(null)
+                  void loadFile(file)
+                }}
+              >
+                Replace
+              </button>
+            </>
+          }
+        >
+          <p>The paint layer on this photo will be cleared. Saved color schemes stay.</p>
+        </Dialog>
+      )}
+    </div>
+  )
+}
+
+function clampSize(size: number): number {
+  return Math.min(160, Math.max(1, size))
+}

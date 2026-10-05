@@ -1,0 +1,19 @@
+# Dependencies and build output
+node_modules
+dist
+dist-ssr
+*.local
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# TypeScript / Vite caches
+*.tsbuildinfo
+.vite
+
+# Environment and OS files
+.env
+.env.*
+.DS_Store
