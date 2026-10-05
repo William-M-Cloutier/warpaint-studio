@@ -5,6 +5,7 @@ type TopBarProps = {
   theme: ThemeName
   image: LoadedPhoto | null
   canClear: boolean
+  cutoutActive: boolean
   onUpload: () => void
   onSave: () => void
   onClear: () => void
@@ -16,6 +17,7 @@ export function TopBar({
   theme,
   image,
   canClear,
+  cutoutActive,
   onUpload,
   onSave,
   onClear,
@@ -41,12 +43,20 @@ export function TopBar({
         <button type="button" className="btn" onClick={onClear} disabled={!canClear}>
           Clear paint
         </button>
-        <button type="button" className="btn" onClick={onFit} disabled={!image}>
-          Fit to view
+        <button
+          type="button"
+          className="btn"
+          onClick={onFit}
+          disabled={!image}
+          title="Frame the photo in the window. Does not change photo scale."
+        >
+          Fit view
         </button>
       </div>
       <p className="file-meta" title={image?.name}>
-        {image ? `${image.name} · ${image.width}×${image.height}` : 'No photo loaded'}
+        {image
+          ? `${image.name} · ${image.width}×${image.height}${cutoutActive ? ' · cutout' : ''}`
+          : 'No photo loaded'}
       </p>
       <button
         type="button"

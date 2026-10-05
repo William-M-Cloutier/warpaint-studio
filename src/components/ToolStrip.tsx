@@ -1,3 +1,4 @@
+import { photoScaleToSlider, sliderToPhotoScale } from '../lib/photoScale'
 import {
   IconBrush,
   IconEraser,
@@ -14,11 +15,23 @@ type ToolStripProps = {
   opacity: number
   canUndo: boolean
   canRedo: boolean
+  hasImage: boolean
+  contentScale: number
+  cutoutStrength: number
+  cutoutActive: boolean
+  cutoutBusy: boolean
   onTool: (tool: Tool) => void
   onBrushSize: (size: number) => void
   onOpacity: (opacity: number) => void
   onUndo: () => void
   onRedo: () => void
+  onPhotoScale: (scale: number) => void
+  onAutoScale: () => void
+  onFitView: () => void
+  onCutoutStrength: (strength: number) => void
+  onRemoveBackdrop: () => void
+  onRepairCutout: () => void
+  onResetCutout: () => void
 }
 
 const TOOLS: { id: Tool; label: string; shortcut: string; icon: typeof IconBrush }[] = [
@@ -34,11 +47,23 @@ export function ToolStrip({
   opacity,
   canUndo,
   canRedo,
+  hasImage,
+  contentScale,
+  cutoutStrength,
+  cutoutActive,
+  cutoutBusy,
   onTool,
   onBrushSize,
   onOpacity,
   onUndo,
   onRedo,
+  onPhotoScale,
+  onAutoScale,
+  onFitView,
+  onCutoutStrength,
+  onRemoveBackdrop,
+  onRepairCutout,
+  onResetCutout,
 }: ToolStripProps) {
   return (
     <aside className="toolstrip" aria-label="Tools">
@@ -91,7 +116,7 @@ export function ToolStrip({
         <button
           type="button"
           className="tool-btn"
-          aria-label="Undo paint stroke"
+          aria-label="Undo"
           title="Undo (Ctrl+Z)"
           onClick={onUndo}
           disabled={!canUndo}
@@ -109,6 +134,105 @@ export function ToolStrip({
           <IconRedo />
         </button>
       </div>
+      <section className="photo-block" aria-label="Photo scale and backdrop">
+        <h2>Photo</h2>
+        <label className="tool-slider">
+          <span>Photo scale</span>
+          <input
+            type="range"
+            min={0}
+            max={1000}
+            step={1}
+            value={photoScaleToSlider(contentScale)}
+            aria-label="Photo scale"
+            aria-valuetext={`${Math.round(contentScale * 100)} percent`}
+            disabled={!hasImage}
+            onChange={(event) => onPhotoScale(sliderToPhotoScale(Number(event.target.value)))}
+          />
+          <span className="slider-value">{Math.round(contentScale * 100)}%</span>
+        </label>
+        <p className="tool-note">Resizes the picture. View zoom is the View % chip.</p>
+        <div className="tool-actions">
+          <button
+            type="button"
+            className="btn"
+            title="Fit the picture in the canvas (Shift+0). Sets photo scale, then frames the view."
+            onClick={onAutoScale}
+            disabled={!hasImage}
+          >
+            Auto
+          </button>
+          <button
+            type="button"
+            className="btn"
+            title="Frame the picture (0). Does not change photo scale."
+            onClick={onFitView}
+            disabled={!hasImage}
+          >
+            Fit view
+          </button>
+        </div>
+        <label className="tool-slider">
+          <span>Cutout strength</span>
+          <input
+            type="range"
+            min={1}
+            max={100}
+            step={1}
+            value={cutoutStrength}
+            aria-label="Cutout strength"
+            disabled={!hasImage || cutoutBusy}
+            onChange={(event) => onCutoutStrength(Number(event.target.value))}
+          />
+          <span className="slider-value">{Math.round(cutoutStrength)}</span>
+        </label>
+        <p className="tool-note">
+          {cutoutActive
+            ? 'Drag to tune. Reset restores the photo. Paint stays on the miniature.'
+            : 'Clears the backdrop and white gaps, then fills small holes in the miniature.'}
+        </p>
+        <button
+          type="button"
+          className="btn btn-block"
+          onClick={onRemoveBackdrop}
+          disabled={!hasImage || cutoutBusy}
+          aria-busy={cutoutBusy}
+        >
+          {cutoutBusy ? 'Working…' : 'Remove backdrop'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-block"
+          onClick={onRepairCutout}
+          disabled={!hasImage || cutoutBusy}
+        >
+          Repair cutout
+        </button>
+        <button
+          type="button"
+          className="btn btn-block"
+          aria-pressed={tool === 'restore'}
+          title="Paint the original photo back (R). Uses Size and Opacity."
+          onClick={() => onTool('restore')}
+          disabled={!hasImage}
+        >
+          Restore photo
+        </button>
+        <button
+          type="button"
+          className="btn btn-block"
+          aria-pressed={tool === 'eraseBackdrop'}
+          title="Erase leftover backdrop (X). Uses Size and Opacity."
+          onClick={() => onTool('eraseBackdrop')}
+          disabled={!hasImage}
+        >
+          Erase backdrop
+        </button>
+        <p className="tool-note">Restore photo fixes over-cut armour. Erase backdrop clears leftover white. Both undo.</p>
+        <button type="button" className="btn btn-block" onClick={onResetCutout} disabled={!cutoutActive || cutoutBusy}>
+          Reset cutout
+        </button>
+      </section>
     </aside>
   )
 }

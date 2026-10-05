@@ -1,6 +1,6 @@
 /**
- * Work that is intentionally out of V1. Do not treat these as implemented.
- * The README "Later" section mirrors this list.
+ * Work that is still later. Photo scale and backdrop removal are implemented
+ * and are not listed here. The README "Later" section mirrors this list.
  */
 export type RoadmapItem = {
   id: string
@@ -9,16 +9,6 @@ export type RoadmapItem = {
 }
 
 export const ROADMAP: readonly RoadmapItem[] = [
-  {
-    id: 'image-scale',
-    title: 'Manual image scale and auto-fit',
-    note: 'Photos with one side too small need a manual scale control and an auto-fit that does not crush the longer side.',
-  },
-  {
-    id: 'background-remover',
-    title: 'Background remover',
-    note: 'Cut the miniature out of the table or desk in the photo.',
-  },
   {
     id: 'view-backgrounds',
     title: 'Custom viewing backgrounds',

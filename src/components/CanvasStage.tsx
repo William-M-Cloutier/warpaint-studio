@@ -1,12 +1,17 @@
 import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
-import { PaintSurface, type ViewState } from '../lib/paintSurface'
-import type { HistoryState, LoadedPhoto, Tool } from '../types'
+import { PaintSurface, type CutoutResult, type ViewState } from '../lib/paintSurface'
+import type { HistoryState, LoadedPhoto, PhotoState, Tool } from '../types'
 
 export type StageHandle = {
   undo: () => void
   redo: () => void
   clearPaint: () => void
   fit: () => void
+  autoScale: () => void
+  setContentScale: (scale: number) => void
+  applyCutout: (strength: number) => CutoutResult | null
+  repairCutout: () => void
+  resetCutout: () => void
   setSpace: (held: boolean) => void
 }
 
@@ -20,28 +25,32 @@ type CanvasStageProps = {
   onPickColor: (hex: string, commit: boolean) => void
   onStroke: (hex: string) => void
   onHistory: (history: HistoryState) => void
+  onPhoto: (photo: PhotoState) => void
   onError: (message: string) => void
   onBrowse: () => void
 }
 
 export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function CanvasStage(
-  { image, tool, color, brushSize, opacity, spaceHeld, onPickColor, onStroke, onHistory, onError, onBrowse },
+  { image, tool, color, brushSize, opacity, spaceHeld, onPickColor, onStroke, onHistory, onPhoto, onError, onBrowse },
   ref,
 ) {
   const viewportRef = useRef<HTMLDivElement>(null)
+  const photoRef = useRef<HTMLCanvasElement>(null)
   const paintRef = useRef<HTMLCanvasElement>(null)
   const previewRef = useRef<HTMLCanvasElement>(null)
   const ringRef = useRef<HTMLDivElement>(null)
   const surfaceRef = useRef<PaintSurface | null>(null)
-  const [view, setView] = useState<ViewState>({ x: 0, y: 0, z: 1 })
+  const [view, setView] = useState<ViewState>({ x: 0, y: 0, z: 1, contentScale: 1 })
 
   const onPickRef = useRef(onPickColor)
   const onStrokeRef = useRef(onStroke)
   const onHistoryRef = useRef(onHistory)
+  const onPhotoRef = useRef(onPhoto)
   const onErrorRef = useRef(onError)
   onPickRef.current = onPickColor
   onStrokeRef.current = onStroke
   onHistoryRef.current = onHistory
+  onPhotoRef.current = onPhoto
   onErrorRef.current = onError
 
   const configRef = useRef({ tool, color, brushSize, opacity, space: spaceHeld })
@@ -49,11 +58,13 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current
+    const photo = photoRef.current
     const paint = paintRef.current
     const preview = previewRef.current
-    if (!viewport || !paint || !preview) return
-    const surface = new PaintSurface(paint, preview, viewport, {
+    if (!viewport || !photo || !paint || !preview) return
+    const surface = new PaintSurface(photo, paint, preview, viewport, {
       view: setView,
+      photo: (state) => onPhotoRef.current(state),
       history: (history) => onHistoryRef.current(history),
       pick: (hex, commit) => onPickRef.current(hex, commit),
       stroke: (hex) => onStrokeRef.current(hex),
@@ -79,6 +90,11 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     redo: () => surfaceRef.current?.redo(),
     clearPaint: () => surfaceRef.current?.clearPaint(),
     fit: () => surfaceRef.current?.fit(),
+    autoScale: () => surfaceRef.current?.autoScale(),
+    setContentScale: (scale: number) => surfaceRef.current?.setContentScale(scale),
+    applyCutout: (strength: number) => surfaceRef.current?.applyCutout(strength) ?? null,
+    repairCutout: () => surfaceRef.current?.repairMask(),
+    resetCutout: () => surfaceRef.current?.resetCutout(),
     setSpace: (held: boolean) => surfaceRef.current?.setSpace(held),
   }))
 
@@ -100,16 +116,14 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
         style={
           image
             ? {
-                width: image.width,
-                height: image.height,
+                width: image.width * view.contentScale,
+                height: image.height * view.contentScale,
                 transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`,
               }
             : undefined
         }
       >
-        {image && (
-          <img src={image.url} alt="" draggable={false} width={image.width} height={image.height} />
-        )}
+        <canvas ref={photoRef} className="photo-layer" aria-hidden="true" />
         <canvas ref={paintRef} className="tint-store" aria-hidden="true" />
         <canvas ref={previewRef} className="display-layer" aria-hidden="true" />
       </div>
@@ -125,11 +139,19 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
         </div>
       )}
 
-      <div ref={ringRef} className={tool === 'eraser' ? 'cursor-ring is-eraser' : 'cursor-ring'} />
+      <div
+        ref={ringRef}
+        className={tool === 'eraser' || tool === 'eraseBackdrop' ? 'cursor-ring is-eraser' : 'cursor-ring'}
+      />
 
       {image && (
-        <button type="button" className="zoom-chip" onClick={() => surfaceRef.current?.fit()}>
-          {zoomLabel} · Fit
+        <button
+          type="button"
+          className="zoom-chip"
+          title="View zoom. Click to frame the photo. This does not change photo scale."
+          onClick={() => surfaceRef.current?.fit()}
+        >
+          View {zoomLabel} · Fit view
         </button>
       )}
     </div>
