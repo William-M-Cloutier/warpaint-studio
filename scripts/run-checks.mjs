@@ -8,6 +8,7 @@ const server = await createServer({
 
 try {
   await server.ssrLoadModule('/scripts/check-cutout.ts')
+  await server.ssrLoadModule('/scripts/check-sections.ts')
 } finally {
   await server.close()
 }

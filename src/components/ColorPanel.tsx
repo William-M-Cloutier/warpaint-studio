@@ -120,7 +120,7 @@ export function ColorPanel({
         <p className="hint">
           Add colors, optionally label them, then save a named scheme in this browser.
         </p>
-        {/* TODO(part-categories): labels here are free text. Structured categories (armour plates, trim, undersuit/joints, details, custom per model) are later. */}
+        {/* Palette labels stay free text. Armour, trim, undersuit, details, and custom labels live on sections. */}
         {/* TODO(paint-suggestions): suggest highlights and shades from the base color. */}
         {/* TODO(paint-catalog): Citadel and other ranges, with quality and comparison notes, are not wired up. */}
         {/* TODO(paint-mix): mix two paints by ratio. */}

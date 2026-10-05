@@ -126,7 +126,7 @@ export function ToolStrip({
         <button
           type="button"
           className="tool-btn"
-          aria-label="Redo paint stroke"
+          aria-label="Redo"
           title="Redo (Ctrl+Shift+Z)"
           onClick={onRedo}
           disabled={!canRedo}

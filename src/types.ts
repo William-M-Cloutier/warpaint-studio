@@ -1,4 +1,28 @@
-export type Tool = 'brush' | 'eraser' | 'eyedropper' | 'pan' | 'restore' | 'eraseBackdrop'
+export type Tool =
+  | 'brush'
+  | 'eraser'
+  | 'eyedropper'
+  | 'pan'
+  | 'restore'
+  | 'eraseBackdrop'
+  | 'wand'
+  | 'lasso'
+  | 'maskBrush'
+
+/** How a wand, lasso, or mask brush writes into a section. */
+export type MaskMode = 'new' | 'add' | 'subtract'
+
+export type SectionCategory = 'armour' | 'trim' | 'undersuit' | 'details' | 'custom'
+
+export type SectionInfo = {
+  id: string
+  name: string
+  color: string
+  category: SectionCategory
+  customLabel: string
+  visible: boolean
+  locked: boolean
+}
 
 export type ThemeName = 'dark' | 'light'
 

@@ -1,6 +1,6 @@
 /**
- * Work that is still later. Photo scale and backdrop removal are implemented
- * and are not listed here. The README "Later" section mirrors this list.
+ * Work that is still later. Photo scale, backdrop removal, and section masks
+ * are implemented and are not listed here. The README "Later" section mirrors this list.
  */
 export type RoadmapItem = {
   id: string
@@ -15,19 +15,14 @@ export const ROADMAP: readonly RoadmapItem[] = [
     note: 'After a cutout exists, place the miniature on a chosen viewing background.',
   },
   {
-    id: 'section-layers',
-    title: 'Edge and section layers',
-    note: 'Editable regions so armour, trim, and other areas can be painted separately.',
+    id: 'edge-snap',
+    title: 'Soft edge snap',
+    note: 'A separate mode that pulls a stroke toward photo edges. Section masks already keep paint inside a region.',
   },
   {
     id: 'paint-suggestions',
     title: 'Suggested paints and highlights',
     note: 'Offer highlight and shade suggestions from a chosen base color.',
-  },
-  {
-    id: 'part-categories',
-    title: 'Part categories',
-    note: 'Armour plates, trim, undersuit/joints, details, plus custom labels stored per model.',
   },
   {
     id: 'paint-catalog',
