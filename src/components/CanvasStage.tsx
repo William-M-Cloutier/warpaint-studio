@@ -91,7 +91,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       data-tool={tool}
       data-space={spaceHeld ? 'true' : 'false'}
       role="application"
-      aria-label="Miniature photo. Paint sits on a layer above the picture."
+      aria-label="Miniature photo. Paint tints the picture and keeps its light and shadow."
       style={{ '--brush': `${brushSize}px` } as CSSProperties}
     >
       <div
@@ -110,15 +110,15 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
         {image && (
           <img src={image.url} alt="" draggable={false} width={image.width} height={image.height} />
         )}
-        <canvas ref={paintRef} className="paint-layer" aria-hidden="true" />
-        <canvas ref={previewRef} className="preview-layer" aria-hidden="true" />
+        <canvas ref={paintRef} className="tint-store" aria-hidden="true" />
+        <canvas ref={previewRef} className="display-layer" aria-hidden="true" />
       </div>
 
       {!image && (
         <div className="empty">
           <MiniSilhouette />
           <h2>Drop a miniature photo</h2>
-          <p>Paint a scheme on a layer above the picture. The photo itself stays untouched.</p>
+          <p>Tint the photo like paint on a miniature. Edges, highlights, and shadows stay visible.</p>
           <button type="button" className="btn btn-primary" onClick={onBrowse}>
             Upload photo
           </button>

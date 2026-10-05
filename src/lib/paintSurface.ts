@@ -1,4 +1,4 @@
-import { compositeHex } from './color'
+import { compositeSurface, sampleTintHex } from './tint'
 import {
   MAX_HISTORY,
   clampBounds,
@@ -78,8 +78,10 @@ function context2d(
 }
 
 /**
- * Photo in the back, paint on a second canvas, live brush on a third.
- * Undo stores strokes and replays them. Full-image snapshots would be far too heavy.
+ * Photo in the back. A hidden canvas stores pigment and coverage (the tint).
+ * The visible canvas is that tint shaded by the photo's luminance, so edges
+ * and light stay in the picture. Undo stores strokes and replays them.
+ * Full-image snapshots would be far too heavy.
  *
  * TODO(section-layers): this is one paint layer. Edge and section layers are later.
  * TODO(image-scale): fit letterboxes the photo. It does not rescale a side that is too small.
@@ -91,9 +93,10 @@ function context2d(
 export class PaintSurface {
   private readonly backup = document.createElement('canvas')
   private readonly sample = document.createElement('canvas')
-  private paintCtx: CanvasRenderingContext2D | null = null
-  private previewCtx: CanvasRenderingContext2D | null = null
+  private tintCtx: CanvasRenderingContext2D | null = null
+  private displayCtx: CanvasRenderingContext2D | null = null
   private sampleCtx: CanvasRenderingContext2D | null = null
+  private presentFailed = false
   private image: LoadedPhoto | null = null
   private hist: Hist | null = null
   private session: Session | null = null
@@ -110,8 +113,10 @@ export class PaintSurface {
   private space = false
 
   constructor(
-    private readonly paint: HTMLCanvasElement,
-    private readonly preview: HTMLCanvasElement,
+    /** Pigment and coverage. Hidden in the page; the photo shades it on display. */
+    private readonly tint: HTMLCanvasElement,
+    /** Visible coat. Transparent where the tint has not been painted. */
+    private readonly display: HTMLCanvasElement,
     private readonly viewport: HTMLElement,
     private readonly emit: SurfaceEvents,
   ) {
@@ -164,7 +169,7 @@ export class PaintSurface {
     this.viewport.classList.remove('is-panning')
     this.image = image
     this.hist = null
-    this.clearPreview()
+    this.clearDisplay()
     if (!image) {
       this.emitHistory()
       return
@@ -230,22 +235,23 @@ export class PaintSurface {
     if (!this.hist || !historyHasPaint(this.hist.actions, this.hist.baseHasPixels)) return
     this.session = null
     this.push({ kind: 'clear' })
-    this.paintCtx?.clearRect(0, 0, this.paint.width, this.paint.height)
-    this.clearPreview()
+    this.tintCtx?.clearRect(0, 0, this.tint.width, this.tint.height)
+    this.clearDisplay()
     this.emitHistory()
   }
 
   private allocate(width: number, height: number): void {
-    this.paint.width = width
-    this.paint.height = height
-    this.preview.width = width
-    this.preview.height = height
+    this.presentFailed = false
+    this.tint.width = width
+    this.tint.height = height
+    this.display.width = width
+    this.display.height = height
     this.backup.width = width
     this.backup.height = height
     this.sample.width = width
     this.sample.height = height
-    this.paintCtx = context2d(this.paint)
-    this.previewCtx = context2d(this.preview)
+    this.tintCtx = context2d(this.tint, { willReadFrequently: true })
+    this.displayCtx = context2d(this.display)
     this.sampleCtx = context2d(this.sample, { willReadFrequently: true })
   }
 
@@ -309,8 +315,7 @@ export class PaintSurface {
       opacity: this.opacity,
       points: [point],
     }
-    if (this.tool === 'eraser') this.snapshotBackup()
-    else this.clearPreview()
+    this.snapshotBackup()
     this.session = { mode: 'draw', pointerId: event.pointerId, stroke, prevBounds: null }
     this.scheduleDraw()
     this.capture(event)
@@ -379,9 +384,8 @@ export class PaintSurface {
       cancelAnimationFrame(this.raf)
       this.raf = 0
     }
-    if (session.stroke.tool === 'eraser') this.commitEraser(session.stroke)
-    else if (this.paintCtx) paintStroke(this.paintCtx, session.stroke)
-    this.clearPreview()
+    this.commitStroke(session.stroke)
+    this.present(strokeBounds(session.stroke))
     this.session = null
     this.viewport.classList.remove('is-panning')
     this.push({ kind: 'stroke', stroke: session.stroke })
@@ -389,11 +393,11 @@ export class PaintSurface {
     this.emitHistory()
   }
 
-  /** Rebuild the eraser from the pre-stroke snapshot so undo replay matches the committed pixels. */
-  private commitEraser(stroke: Stroke): void {
-    const ctx = this.paintCtx
+  /** Rebuild from the pre-stroke snapshot so the committed tint matches what undo will replay. */
+  private commitStroke(stroke: Stroke): void {
+    const ctx = this.tintCtx
     if (!ctx) return
-    ctx.clearRect(0, 0, this.paint.width, this.paint.height)
+    ctx.clearRect(0, 0, this.tint.width, this.tint.height)
     ctx.drawImage(this.backup, 0, 0)
     paintStroke(ctx, stroke)
   }
@@ -409,38 +413,33 @@ export class PaintSurface {
   }
 
   /**
-   * Brush strokes preview on a transparent canvas so each move does not copy the photo.
-   * The eraser has to reveal pixels underneath, so it restores only the dirty rectangle
-   * from a snapshot taken when the stroke began.
+   * Restore the dirty rectangle from the stroke's starting snapshot, redraw the
+   * whole stroke into the tint, then shade that rectangle onto the display.
+   * Brush and eraser share this path so a partial-opacity stroke does not flash
+   * when the pointer goes up.
    */
   private renderDraw(session: DrawSession): void {
     const next = strokeBounds(session.stroke)
     if (!next) return
-    const width = this.paint.width
-    const height = this.paint.height
+    const width = this.tint.width
+    const height = this.tint.height
     const bounds = clampBounds(next, width, height)
     const region = session.prevBounds
       ? clampBounds(unionBounds(session.prevBounds, bounds), width, height)
       : bounds
     if (region.w < 1 || region.h < 1) return
 
-    if (session.stroke.tool === 'eraser') {
-      const ctx = this.paintCtx
-      if (!ctx) return
-      ctx.save()
-      ctx.beginPath()
-      ctx.rect(region.x, region.y, region.w, region.h)
-      ctx.clip()
-      ctx.imageSmoothingEnabled = false
-      ctx.drawImage(this.backup, 0, 0)
-      ctx.restore()
-      paintStroke(ctx, session.stroke)
-    } else {
-      const ctx = this.previewCtx
-      if (!ctx) return
-      ctx.clearRect(region.x, region.y, region.w, region.h)
-      paintStroke(ctx, session.stroke)
-    }
+    const ctx = this.tintCtx
+    if (!ctx) return
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(region.x, region.y, region.w, region.h)
+    ctx.clip()
+    ctx.imageSmoothingEnabled = false
+    ctx.drawImage(this.backup, 0, 0)
+    ctx.restore()
+    paintStroke(ctx, session.stroke)
+    this.present(region)
     session.prevBounds = bounds
   }
 
@@ -448,22 +447,45 @@ export class PaintSurface {
     const ctx = context2d(this.backup)
     if (!ctx) return
     ctx.clearRect(0, 0, this.backup.width, this.backup.height)
-    ctx.drawImage(this.paint, 0, 0)
+    ctx.drawImage(this.tint, 0, 0)
   }
 
-  private clearPreview(): void {
-    this.previewCtx?.clearRect(0, 0, this.preview.width, this.preview.height)
+  private clearDisplay(): void {
+    this.displayCtx?.clearRect(0, 0, this.display.width, this.display.height)
+  }
+
+  /** Shade the tint by the photo and write it to the visible canvas. Null bounds refreshes the whole picture. */
+  private present(bounds: Bounds | null): void {
+    const tintCtx = this.tintCtx
+    const photoCtx = this.sampleCtx
+    const display = this.displayCtx
+    if (!tintCtx || !photoCtx || !display || this.presentFailed) return
+    const width = this.tint.width
+    const height = this.tint.height
+    const region = bounds
+      ? clampBounds(bounds, width, height)
+      : { x: 0, y: 0, w: width, h: height }
+    if (region.w < 1 || region.h < 1) return
+    try {
+      const tint = tintCtx.getImageData(region.x, region.y, region.w, region.h)
+      const photo = photoCtx.getImageData(region.x, region.y, region.w, region.h)
+      compositeSurface(tint.data, photo.data, tint.data)
+      display.putImageData(tint, region.x, region.y)
+    } catch {
+      this.presentFailed = true
+      this.emit.error('Could not update the painted preview.')
+    }
   }
 
   private replay(): void {
-    const ctx = this.paintCtx
+    const ctx = this.tintCtx
     const hist = this.hist
     if (!ctx || !hist) return
-    ctx.clearRect(0, 0, this.paint.width, this.paint.height)
+    ctx.clearRect(0, 0, this.tint.width, this.tint.height)
     const projected = projectActions(hist.actions)
     if (projected.includeBase && hist.base) ctx.drawImage(hist.base, 0, 0)
     for (const stroke of projected.strokes) paintStroke(ctx, stroke)
-    this.clearPreview()
+    this.present(null)
     this.emitHistory()
   }
 
@@ -495,13 +517,13 @@ export class PaintSurface {
   }
 
   private sampleColor(point: Point): string | null {
-    if (!this.paintCtx || !this.sampleCtx) return null
-    const x = Math.min(this.paint.width - 1, Math.max(0, Math.floor(point.x)))
-    const y = Math.min(this.paint.height - 1, Math.max(0, Math.floor(point.y)))
+    if (!this.tintCtx || !this.sampleCtx) return null
+    const x = Math.min(this.tint.width - 1, Math.max(0, Math.floor(point.x)))
+    const y = Math.min(this.tint.height - 1, Math.max(0, Math.floor(point.y)))
     try {
-      const paint = this.paintCtx.getImageData(x, y, 1, 1).data
-      const base = this.sampleCtx.getImageData(x, y, 1, 1).data
-      return compositeHex(paint, base)
+      const tint = this.tintCtx.getImageData(x, y, 1, 1).data
+      const photo = this.sampleCtx.getImageData(x, y, 1, 1).data
+      return sampleTintHex(tint, photo)
     } catch {
       this.emit.error('Could not sample that pixel.')
       return null
@@ -509,16 +531,16 @@ export class PaintSurface {
   }
 
   private toImage(clientX: number, clientY: number): Point | null {
-    const rect = this.paint.getBoundingClientRect()
+    const rect = this.display.getBoundingClientRect()
     if (rect.width < 1 || rect.height < 1) return null
     if (clientX < rect.left || clientY < rect.top || clientX > rect.right || clientY > rect.bottom) {
       return null
     }
-    const x = ((clientX - rect.left) / rect.width) * this.paint.width
-    const y = ((clientY - rect.top) / rect.height) * this.paint.height
+    const x = ((clientX - rect.left) / rect.width) * this.display.width
+    const y = ((clientY - rect.top) / rect.height) * this.display.height
     return {
-      x: clamp(x, 0, Math.max(0, this.paint.width - 0.01)),
-      y: clamp(y, 0, Math.max(0, this.paint.height - 0.01)),
+      x: clamp(x, 0, Math.max(0, this.display.width - 0.01)),
+      y: clamp(y, 0, Math.max(0, this.display.height - 0.01)),
     }
   }
 
