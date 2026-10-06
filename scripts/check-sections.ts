@@ -338,4 +338,108 @@ assert.equal(projected.items.length, 1)
 assert.equal(projected.items[0].kind, 'fill')
 if (projected.items[0].kind === 'fill') assert.equal(projected.items[0].fill.color, '#112233')
 
+// A near-white ridge on a plate used to be marked off the miniature. The wand
+// then snapped to the plate, reported it already selected, and left the ridge
+// out of the mask so Brush / Highlight / Fill could not land there.
+const ridgeW = 160
+const ridgeH = 120
+const ridged = makeBuffer(ridgeW, ridgeH, [250, 250, 250, 255])
+for (let y = 30; y < 90; y += 1) {
+  for (let x = 40; x < 120; x += 1) {
+    const i = (y * ridgeW + x) * 4
+    ridged[i] = 110
+    ridged[i + 1] = 110
+    ridged[i + 2] = 110
+    ridged[i + 3] = 255
+  }
+}
+for (let y = 30; y < 90; y += 1) {
+  for (let x = 79; x <= 81; x += 1) {
+    const i = (y * ridgeW + x) * 4
+    ridged[i] = 248
+    ridged[i + 1] = 248
+    ridged[i + 2] = 248
+    ridged[i + 3] = 255
+  }
+}
+const ridgeLayer = new SectionLayer()
+ridgeLayer.reset(ridgeW, ridgeH)
+assert.equal(ridgeLayer.wand(ridged, 60, 50, 48, 'new').ok, true)
+const ridgeClick = 50 * ridgeW + 80
+const beforeRidge = ridgeLayer.clipForPaint(null).clip?.mask
+assert.ok(beforeRidge)
+if (beforeRidge[ridgeClick] === 0) {
+  const addedRidge = ridgeLayer.wand(ridged, 80, 50, 48, 'add')
+  assert.equal(addedRidge.ok, true, addedRidge.ok ? '' : addedRidge.reason)
+}
+const ridgeMask = ridgeLayer.clipForPaint(null).clip?.mask
+assert.ok(ridgeMask)
+let ridgeCovered = 0
+for (let y = 30; y < 90; y += 1) {
+  for (let x = 79; x <= 81; x += 1) if (ridgeMask[y * ridgeW + x] > 0) ridgeCovered += 1
+}
+assert.equal(ridgeCovered, 180, `highlight ridge stayed outside the section (${ridgeCovered}/180)`)
+assert.ok(sectionFillAlpha(ridgeMask[ridgeClick], null, 1) > 0, 'fill still skips a ridge pixel the wand put in the section')
+assert.equal(ridgeMask[2 * ridgeW + 2], 0, 'the highlight fix pulled in the white field')
+const ridgeAgain = ridgeLayer.wand(ridged, 80, 50, 48, 'add')
+assert.equal(ridgeAgain.ok, false)
+if (!ridgeAgain.ok) {
+  assert.equal(ridgeAgain.reason, 'That area is already in the section.')
+  assert.ok(ridgeMask[ridgeClick] > 0, 'already-in-section was reported for a pixel the mask does not contain')
+}
+const removedRidge = ridgeLayer.wand(ridged, 80, 50, 48, 'subtract')
+assert.equal(removedRidge.ok, true, removedRidge.ok ? '' : removedRidge.reason)
+assert.equal(ridgeLayer.clipForPaint(null).clip?.mask[ridgeClick] ?? 1, 0, 'subtract left the ridge pixel in the section')
+
+const suggested = proposeSectionMasks(ridged, ridgeW, ridgeH)
+assert.ok(
+  suggested.some((entry) => entry[ridgeClick] > 0),
+  'suggest dropped the highlight ridge',
+)
+
+const painted = new SectionLayer()
+painted.reset(ridgeW, ridgeH)
+assert.equal(painted.wand(ridged, 60, 50, 48, 'new').ok, true)
+const gapPixel = 40 * ridgeW + 50
+const gapMask = painted.clipForPaint(null).clip?.mask
+assert.ok(gapMask)
+gapMask[gapPixel] = 0
+assert.equal(painted.beginPreview('add').ok, true)
+const gapStamp = new Uint8Array(ridgeW * ridgeH)
+gapStamp[gapPixel] = 255
+painted.stampPreview(gapStamp, 0, 0, ridgeW, ridgeH)
+assert.equal(painted.commitPreview(), true)
+const paintedMask = painted.clipForPaint(null).clip?.mask
+assert.ok(paintedMask)
+assert.equal(paintedMask[gapPixel], 255, 'mask brush could not add a hole in the active section')
+assert.ok(sectionFillAlpha(paintedMask[gapPixel], null, 1) > 0)
+
+const thick = makeBuffer(ridgeW, ridgeH, [250, 250, 250, 255])
+for (let y = 30; y < 90; y += 1) {
+  for (let x = 40; x < 120; x += 1) {
+    const i = (y * ridgeW + x) * 4
+    thick[i] = 120
+    thick[i + 1] = 120
+    thick[i + 2] = 120
+    thick[i + 3] = 255
+  }
+}
+const thickEdits = { add: new Uint8Array(ridgeW * ridgeH), erase: new Uint8Array(ridgeW * ridgeH) }
+for (let y = 30; y < 90; y += 1) {
+  for (let x = 74; x <= 86; x += 1) thickEdits.add[y * ridgeW + x] = 255
+}
+const thickLayer = new SectionLayer()
+thickLayer.reset(ridgeW, ridgeH)
+assert.equal(thickLayer.wand(thick, 55, 50, 48, 'new', thickEdits).ok, true)
+const thickAdd = thickLayer.wand(thick, 80, 50, 48, 'add', thickEdits)
+assert.equal(thickAdd.ok, true, thickAdd.ok ? '' : thickAdd.reason)
+const thickMask = thickLayer.clipForPaint(null).clip?.mask
+assert.ok(thickMask)
+let thickOpen = 0
+for (let y = 30; y < 90; y += 1) {
+  for (let x = 74; x <= 86; x += 1) if (thickMask[y * ridgeW + x] === 0) thickOpen += 1
+}
+assert.equal(thickOpen, 0, `a hand-drawn ridge stayed outside the section (${thickOpen} pixels)`)
+assert.equal(thickMask[2 * ridgeW + 2], 0, 'ridge add took the white field')
+
 console.log('section checks passed')
