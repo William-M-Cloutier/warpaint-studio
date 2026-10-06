@@ -12,6 +12,7 @@ try {
   await server.ssrLoadModule('/scripts/check-ridges.ts')
   await server.ssrLoadModule('/scripts/check-edge-snap.ts')
   await server.ssrLoadModule('/scripts/check-catalog.ts')
+  await server.ssrLoadModule('/scripts/check-tools.ts')
 } finally {
   await server.close()
 }

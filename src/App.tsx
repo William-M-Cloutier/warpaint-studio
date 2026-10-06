@@ -282,6 +282,7 @@ export function App() {
       else if (key === 'e' || key === '2') setTool('eraser')
       else if (key === 'i' || key === '3') setTool('eyedropper')
       else if (key === 'h' || key === '4') setTool('pan')
+      else if (key === 'f') stageRef.current?.fillSection()
       else if (key === 'r') setTool('restore')
       else if (key === 'x') setTool('eraseBackdrop')
       else if (key === 'w') {
@@ -456,8 +457,10 @@ export function App() {
           showEdgeSnap={
             tool === 'brush' ||
             tool === 'eraser' ||
+            tool === 'highlight' ||
             ((tool === 'lasso' || tool === 'maskBrush') && sideTab !== 'sections')
           }
+          onFill={() => stageRef.current?.fillSection()}
         />
         <CanvasStage
           ref={stageRef}
@@ -560,7 +563,6 @@ export function App() {
           onSnapStrength={setSnapStrength}
           brushSize={brushSize}
           onBrushSize={setBrushSize}
-          onFill={() => stageRef.current?.fillSection()}
         />
         </div>
         <div

@@ -32,7 +32,6 @@ type SectionPanelProps = {
   onSnapStrength: (strength: number) => void
   brushSize: number
   onBrushSize: (size: number) => void
-  onFill: () => void
 }
 
 const SECTION_TOOLS: { id: Tool; label: string; shortcut: string }[] = [
@@ -76,7 +75,6 @@ export function SectionPanel({
   onSnapStrength,
   brushSize,
   onBrushSize,
-  onFill,
 }: SectionPanelProps) {
   const active = sections.find((section) => section.id === activeId) ?? null
   const activeName = active ? active.name.trim() || 'Untitled section' : null
@@ -129,21 +127,23 @@ export function SectionPanel({
           onSnapStrength={onSnapStrength}
         />
       )}
-      <div className="segmented" role="radiogroup" aria-label="How the mask tool writes">
-        {MASK_MODES.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            className="btn"
-            role="radio"
-            aria-checked={maskMode === entry.id}
-            disabled={!hasImage}
-            onClick={() => onMaskMode(entry.id)}
-          >
-            {entry.label}
-          </button>
-        ))}
-      </div>
+      {tool !== 'edgeAdd' && tool !== 'edgeErase' && (
+        <div className="segmented" role="radiogroup" aria-label="How the mask tool writes">
+          {MASK_MODES.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              className="btn"
+              role="radio"
+              aria-checked={maskMode === entry.id}
+              disabled={!hasImage}
+              onClick={() => onMaskMode(entry.id)}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+      )}
       <label className="tool-slider section-tolerance">
         <span>Edge tolerance</span>
         <input
@@ -194,8 +194,8 @@ export function SectionPanel({
       </button>
       <p className="tool-note">
         Edge-aware wand. It grows across a plate and stops at a Canny ridge, so a shade ramp stays one region.
-        Show edges draws those automatic ridges in yellow. Add ridge paints the wall itself in blue — that stroke
-        is the ridge, not a second outline. Erase ridge knocks a false one out. The wand, Suggest, and Stay inside
+        Show edges draws automatic ridges and ridges you add in yellow. Add ridge paints the wall itself.
+        Erase ridge knocks a false one out. The wand, Suggest, and Stay inside
         lines follow that edited map. Both undo. Edge tolerance stays here for the wand and those ridge tools.
       </p>
       <button
@@ -206,15 +206,6 @@ export function SectionPanel({
         aria-busy={proposeBusy}
       >
         {proposeBusy ? 'Working…' : 'Suggest regions'}
-      </button>
-      <button
-        type="button"
-        className="btn btn-block"
-        onClick={onFill}
-        disabled={!hasImage || !active || active.locked}
-        title={active?.locked ? 'Unlock the section to fill it' : 'Fill the active section with the current color'}
-      >
-        Fill section
       </button>
       <div className="section-scroll">
       <button

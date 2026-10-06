@@ -4,7 +4,9 @@ import {
   IconBrush,
   IconEraser,
   IconEyedropper,
+  IconFill,
   IconHand,
+  IconHighlight,
   IconRedo,
   IconUndo,
 } from './Icons'
@@ -38,6 +40,7 @@ type ToolStripProps = {
   onEdgeSnap: (enabled: boolean) => void
   onSnapStrength: (strength: number) => void
   showEdgeSnap: boolean
+  onFill: () => void
 }
 
 const TOOLS: { id: Tool; label: string; shortcut: string; icon: typeof IconBrush }[] = [
@@ -45,6 +48,7 @@ const TOOLS: { id: Tool; label: string; shortcut: string; icon: typeof IconBrush
   { id: 'eraser', label: 'Eraser', shortcut: 'E', icon: IconEraser },
   { id: 'eyedropper', label: 'Eyedropper', shortcut: 'I', icon: IconEyedropper },
   { id: 'pan', label: 'Pan', shortcut: 'H', icon: IconHand },
+  { id: 'highlight', label: 'Highlight', shortcut: '', icon: IconHighlight },
 ]
 
 export function ToolStrip({
@@ -75,6 +79,7 @@ export function ToolStrip({
   onEdgeSnap,
   onSnapStrength,
   showEdgeSnap,
+  onFill,
 }: ToolStripProps) {
   return (
     <aside className="toolstrip" aria-label="Tools">
@@ -89,13 +94,23 @@ export function ToolStrip({
               aria-pressed={tool === entry.id}
               aria-label={entry.label}
               aria-keyshortcuts={entry.shortcut}
-              title={`${entry.label} (${entry.shortcut})`}
+              title={entry.shortcut ? `${entry.label} (${entry.shortcut})` : entry.label}
               onClick={() => onTool(entry.id)}
             >
               <Icon />
             </button>
           )
         })}
+        <button
+          type="button"
+          className="tool-btn"
+          aria-label="Fill"
+          title="Fill the active section with the current color (F)"
+          disabled={!hasImage}
+          onClick={onFill}
+        >
+          <IconFill />
+        </button>
       </div>
       <label className="tool-slider">
         <span>Size</span>

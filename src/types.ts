@@ -3,6 +3,7 @@ export type Tool =
   | 'eraser'
   | 'eyedropper'
   | 'pan'
+  | 'highlight'
   | 'restore'
   | 'eraseBackdrop'
   | 'wand'

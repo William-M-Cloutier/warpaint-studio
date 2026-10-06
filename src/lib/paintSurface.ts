@@ -1,4 +1,6 @@
 import { canvasToBitmap } from './canvasPoint'
+import { highlightColor } from './color'
+import { extendStroke, type LineLock } from './constrain'
 import { clampCutoutStrength, projectCutout, removeBackdrop, repairCutout } from './cutout'
 import { RidgeLayer, ridgeAlpha, type RidgeStroke } from './edgeEdits'
 import { edgeGuide, selectionEdges } from './edgeSelect'
@@ -82,6 +84,7 @@ type DrawSession = {
   snap: SnapGrid | null
   snapStrength: number
   margin: number
+  line: LineLock | null
 }
 
 type PanSession = {
@@ -111,6 +114,7 @@ type MaskSession = {
   pointerId: number
   stroke: MaskStroke
   prevBounds: Bounds | null
+  line: LineLock | null
 }
 
 type LassoSession = {
@@ -121,6 +125,7 @@ type LassoSession = {
   snap: SnapGrid | null
   snapStrength: number
   margin: number
+  line: LineLock | null
 }
 
 type WandSession = {
@@ -138,12 +143,14 @@ type SectionBrushSession = {
   snap: SnapGrid | null
   snapStrength: number
   margin: number
+  line: LineLock | null
 }
 
 type RidgeSession = {
   mode: 'ridge'
   pointerId: number
   stroke: RidgeStroke
+  line: LineLock | null
 }
 
 type Session =
@@ -171,7 +178,15 @@ function isRidgeTool(tool: Tool): tool is 'edgeAdd' | 'edgeErase' {
 }
 
 function showsBrushRing(tool: Tool, space: boolean): boolean {
-  return !space && (tool === 'brush' || tool === 'eraser' || tool === 'maskBrush' || isMaskTool(tool) || isRidgeTool(tool))
+  return (
+    !space &&
+    (tool === 'brush' || tool === 'eraser' || tool === 'highlight' || tool === 'maskBrush' || isMaskTool(tool) || isRidgeTool(tool))
+  )
+}
+
+function lineFrom(point: Point, shiftKey: boolean): LineLock | null {
+  if (!shiftKey) return null
+  return { index: 0, anchor: { x: point.x, y: point.y } }
 }
 
 const MIN_ZOOM = 0.02
@@ -860,13 +875,13 @@ export class PaintSurface {
         points: [point],
       }
       this.snapshotMask()
-      this.session = { mode: 'mask', pointerId: event.pointerId, stroke, prevBounds: null }
+      this.session = { mode: 'mask', pointerId: event.pointerId, stroke, prevBounds: null, line: lineFrom(point, event.shiftKey) }
       this.scheduleDraw()
       this.capture(event)
       return
     }
 
-    if (this.tool !== 'brush' && this.tool !== 'eraser') return
+    if (this.tool !== 'brush' && this.tool !== 'eraser' && this.tool !== 'highlight') return
     const clipTarget = this.sections.clipForPaint(this.cutoutActive ? this.cutoutAlpha : null)
     if (clipTarget.blocked) {
       this.emit.error(clipTarget.blocked)
@@ -876,8 +891,8 @@ export class PaintSurface {
     const hug = this.strokeSnap(size, clipTarget.clip?.mask ?? null)
     const start = this.biasSnapped(hug, point, point)
     const stroke: Stroke = {
-      tool: this.tool,
-      color: this.color,
+      tool: this.tool === 'eraser' ? 'eraser' : 'brush',
+      color: this.tool === 'highlight' ? highlightColor(this.color) : this.color,
       size,
       opacity: this.opacity,
       points: [start],
@@ -889,6 +904,7 @@ export class PaintSurface {
       pointerId: event.pointerId,
       stroke,
       prevBounds: null,
+      line: lineFrom(start, event.shiftKey),
       ...hug,
     }
     this.scheduleDraw()
@@ -931,29 +947,25 @@ export class PaintSurface {
       return
     }
 
-    const samples = event.getCoalescedEvents?.() ?? [event]
+    const shiftKey = event.shiftKey
+    const samples = shiftKey ? [event] : (event.getCoalescedEvents?.() ?? [event])
     let added = false
     for (const sample of samples) {
       let point = this.toImage(sample.clientX, sample.clientY)
       if (!point) continue
+      const points =
+        session.mode === 'lasso' || session.mode === 'section-brush' ? session.points : session.stroke.points
       if (
+        !shiftKey &&
         (session.mode === 'draw' || session.mode === 'lasso' || session.mode === 'section-brush') &&
         session.snap
       ) {
-        const points = session.mode === 'draw' ? session.stroke.points : session.points
         const last = points[points.length - 1]
         point = this.clampImage(biasStrokePoint(session.snap, last, point, session.snapStrength, session.margin))
       }
-      const points =
-        session.mode === 'lasso' || session.mode === 'section-brush'
-          ? session.points
-          : session.stroke.points
-      const last = points[points.length - 1]
-      const dx = point.x - last.x
-      const dy = point.y - last.y
-      if (dx * dx + dy * dy < 0.36) continue
-      points.push(point)
-      added = true
+      const next = extendStroke(points, session.line, point, shiftKey)
+      session.line = next.line
+      if (next.changed) added = true
     }
     if (added) this.scheduleDraw()
   }
@@ -1263,6 +1275,7 @@ export class PaintSurface {
         pointerId: event.pointerId,
         points: [start],
         maskMode: this.maskMode,
+        line: lineFrom(start, event.shiftKey),
         ...hug,
       }
       this.refreshOverlay(null, [start])
@@ -1285,6 +1298,7 @@ export class PaintSurface {
       size,
       opacity: this.opacity,
       prevBounds: null,
+      line: lineFrom(start, event.shiftKey),
       ...hug,
     }
     this.scheduleDraw()
@@ -1367,7 +1381,7 @@ export class PaintSurface {
       size: Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5),
       points: [point],
     }
-    this.session = { mode: 'ridge', pointerId: event.pointerId, stroke }
+    this.session = { mode: 'ridge', pointerId: event.pointerId, stroke, line: lineFrom(point, event.shiftKey) }
     this.renderRidge(this.session)
     this.capture(event)
   }
@@ -1403,10 +1417,10 @@ export class PaintSurface {
       if (stroke.tool === 'erase') {
         data[offset + 3] = 0
       } else {
-        data[offset] = 80
+        data[offset] = 255
         data[offset + 1] = 214
-        data[offset + 2] = 255
-        data[offset + 3] = 235
+        data[offset + 2] = 64
+        data[offset + 3] = 230
       }
     }
     ctx.putImageData(image, stamp.x, stamp.y)
@@ -1724,10 +1738,10 @@ export class PaintSurface {
       for (let i = 0; i < added.length; i += 1) {
         if (added[i] === 0) continue
         const offset = i * 4
-        data[offset] = 80
+        data[offset] = 255
         data[offset + 1] = 214
-        data[offset + 2] = 255
-        data[offset + 3] = 235
+        data[offset + 2] = 64
+        data[offset + 3] = 230
       }
     }
     ctx.putImageData(image, 0, 0)

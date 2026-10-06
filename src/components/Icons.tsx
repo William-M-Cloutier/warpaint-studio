@@ -48,6 +48,26 @@ export function IconEyedropper() {
   )
 }
 
+export function IconHighlight() {
+  return (
+    <Glyph>
+      <path d="M5 16.5c2.2-4 4.2-6 7-6s4.8 2 7 6" />
+      <path d="M12 6.5v3" />
+      <path d="M8.2 8.2 9.6 10" />
+      <path d="M15.8 8.2 14.4 10" />
+    </Glyph>
+  )
+}
+
+export function IconFill() {
+  return (
+    <Glyph>
+      <path d="M8 14.5c0 2.2 1.6 3.5 4 3.5s4-1.3 4-3.5c0-2.4-4-6.2-4-6.2s-4 3.8-4 6.2z" />
+      <path d="M9.5 5.5 14 9" />
+    </Glyph>
+  )
+}
+
 export function IconHand() {
   return (
     <Glyph>
