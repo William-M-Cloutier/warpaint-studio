@@ -36,6 +36,8 @@ export type StageHandle = {
 }
 
 type CanvasStageProps = {
+  slotId: string
+  slotLabel: string
   image: LoadedPhoto | null
   tool: Tool
   color: string
@@ -64,6 +66,8 @@ type CanvasStageProps = {
 
 export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function CanvasStage(
   {
+    slotId,
+    slotLabel,
     image,
     tool,
     color,
@@ -208,9 +212,10 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       ref={viewportRef}
       className="viewport"
       data-tool={tool}
+      data-view={slotId}
       data-space={spaceHeld ? 'true' : 'false'}
       role="application"
-      aria-label="Miniature photo. Paint tints the picture and keeps its light and shadow."
+      aria-label={`${slotLabel}. Paint tints the picture and keeps its light and shadow.`}
       style={
         {
           '--brush': `${brushSize * view.contentScale * view.z}px`,
@@ -248,8 +253,8 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       {!image && (
         <div className="empty">
           <MiniSilhouette />
-          <h2>Drop a miniature photo</h2>
-          <p>Tint the photo like paint on a miniature. Edges, highlights, and shadows stay visible.</p>
+          <h2>{slotLabel}</h2>
+          <p>This view is empty. Upload a photo to paint it. Other views keep their own paint.</p>
           <button type="button" className="btn btn-primary" onClick={onBrowse}>
             Upload photo
           </button>

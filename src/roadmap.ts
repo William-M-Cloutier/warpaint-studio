@@ -20,11 +20,6 @@ export const ROADMAP: readonly RoadmapItem[] = [
     note: 'Mix two paints by a stated ratio and use the result as a color.',
   },
   {
-    id: 'multi-angle',
-    title: '2×2 multi-angle layout',
-    note: 'Load several photos of one miniature and paint them as a set.',
-  },
-  {
     id: 'tutorial',
     title: 'In-app tutorial',
     note: 'Add this near the end, after the painting workflow has settled.',

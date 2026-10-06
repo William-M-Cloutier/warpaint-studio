@@ -6,6 +6,7 @@ import { Dialog } from './components/Dialog'
 import { SectionPanel } from './components/SectionPanel'
 import { TopBar } from './components/TopBar'
 import { ToolStrip } from './components/ToolStrip'
+import { ViewSlots } from './components/ViewSlots'
 import { useSchemes } from './hooks/useSchemes'
 import { useTheme } from './hooks/useTheme'
 import { backdropCssColor } from './lib/backdrop'
@@ -14,17 +15,26 @@ import { createId, highlightColor, normalizeHex, rememberColor } from './lib/col
 import { DEFAULT_SNAP_STRENGTH } from './lib/edgeSnap'
 import { decodeImage, isImageFile, photoTooLarge } from './lib/imageFile'
 import { loadPrefs, savePrefs } from './lib/storage'
+import {
+  VIEW_SLOTS,
+  blankView,
+  createViews,
+  isViewSlotId,
+  viewSlotById,
+  withHistory,
+  withPhoto,
+  withRidges,
+  withSections,
+  type ViewRecord,
+  type ViewSlotId,
+} from './lib/views'
 import type {
   BackdropChoice,
   ColorScheme,
   HighlightPigment,
-  HistoryState,
-  LoadedPhoto,
   MaskMode,
-  PhotoState,
   SchemeColor,
   SectionCategory,
-  SectionInfo,
   Tool,
 } from './types'
 
@@ -33,7 +43,7 @@ import type {
 type DialogState =
   | { type: 'save' }
   | { type: 'delete'; scheme: ColorScheme }
-  | { type: 'replace'; file: File }
+  | { type: 'replace'; file: File; slot: ViewSlotId }
   | null
 
 type Notice = { id: number; text: string }
@@ -45,8 +55,6 @@ const SIDE_TABS: { id: SideTab; label: string }[] = [
   { id: 'sections', label: 'Sections' },
   { id: 'catalog', label: 'Catalog' },
 ]
-
-const EMPTY_HISTORY: HistoryState = { canUndo: false, canRedo: false, hasPaint: false }
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
@@ -79,8 +87,8 @@ export function App() {
   const [brushSize, setBrushSize] = useState(initialPrefs.current.brushSize)
   const [opacity, setOpacity] = useState(initialPrefs.current.opacity)
   const [palette, setPalette] = useState<SchemeColor[]>([])
-  const [image, setImage] = useState<LoadedPhoto | null>(null)
-  const [history, setHistory] = useState<HistoryState>(EMPTY_HISTORY)
+  const [views, setViews] = useState(createViews)
+  const [activeView, setActiveView] = useState<ViewSlotId>('front')
   const [paintSerial, setPaintSerial] = useState(0)
   const [spaceHeld, setSpaceHeld] = useState(false)
   const [dragging, setDragging] = useState(false)
@@ -88,18 +96,13 @@ export function App() {
   const [draftName, setDraftName] = useState('Untitled scheme')
   const [savePreview, setSavePreview] = useState<SchemeColor[]>([])
   const [notice, setNotice] = useState<Notice | null>(null)
-  const [contentScale, setContentScale] = useState(1)
-  const [cutoutActive, setCutoutActive] = useState(false)
   const [cutoutStrength, setCutoutStrength] = useState(34)
   const [cutoutBusy, setCutoutBusy] = useState(false)
-  const [sections, setSections] = useState<SectionInfo[]>([])
-  const [activeSectionId, setActiveSectionId] = useState<string | null>(null)
   const [maskMode, setMaskMode] = useState<MaskMode>('new')
   const [tolerance, setTolerance] = useState(48)
   const [showEdges, setShowEdges] = useState(false)
   const [edgeSnap, setEdgeSnap] = useState(false)
   const [snapStrength, setSnapStrength] = useState(DEFAULT_SNAP_STRENGTH)
-  const [ridgesActive, setRidgesActive] = useState(false)
   const [pickedId, setPickedId] = useState<string | null>(null)
   const [proposeBusy, setProposeBusy] = useState(false)
   const [sideTab, setSideTab] = useState<SideTab>('color')
@@ -116,15 +119,42 @@ export function App() {
   const [backdropImageName, setBackdropImageName] = useState<string | null>(null)
 
   const stageRef = useRef<StageHandle>(null)
+  const stagesRef = useRef<Partial<Record<ViewSlotId, StageHandle | null>>>({})
   const fileRef = useRef<HTMLInputElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
-  const imageRef = useRef(image)
+  const viewsRef = useRef(views)
+  const activeViewRef = useRef(activeView)
+  const loadTargetRef = useRef<ViewSlotId>('front')
   const dialogRef = useRef(dialog)
   const cutoutTimer = useRef(0)
   const backdropImageRef = useRef<string | null>(null)
-  imageRef.current = image
+  const stageBinders = useRef<Record<ViewSlotId, (handle: StageHandle | null) => void> | null>(null)
+  viewsRef.current = views
+  activeViewRef.current = activeView
   dialogRef.current = dialog
   backdropImageRef.current = backdropImage
+  if (!stageBinders.current) {
+    const assign = (id: ViewSlotId) => (handle: StageHandle | null) => {
+      stagesRef.current[id] = handle
+      if (activeViewRef.current === id) stageRef.current = handle
+    }
+    stageBinders.current = {
+      front: assign('front'),
+      back: assign('back'),
+      'side-l': assign('side-l'),
+      'side-r': assign('side-r'),
+    }
+  }
+
+  const activeRecord = views[activeView]
+  const image = activeRecord.image
+  const history = activeRecord.history
+  const sections = activeRecord.sections
+  const activeSectionId = activeRecord.activeSectionId
+  const cutoutActive = activeRecord.cutoutActive
+  const contentScale = activeRecord.contentScale
+  const ridgesActive = activeRecord.ridgesActive
+  const activeLabel = viewSlotById(activeView).label
 
   const flash = useCallback((text: string) => {
     setNotice({ id: Date.now(), text })
@@ -142,7 +172,10 @@ export function App() {
 
   useEffect(() => {
     return () => {
-      if (imageRef.current) URL.revokeObjectURL(imageRef.current.url)
+      for (const slot of VIEW_SLOTS) {
+        const url = viewsRef.current[slot.id].image?.url
+        if (url) URL.revokeObjectURL(url)
+      }
       if (backdropImageRef.current) URL.revokeObjectURL(backdropImageRef.current)
       window.clearTimeout(cutoutTimer.current)
     }
@@ -150,28 +183,30 @@ export function App() {
 
   useEffect(() => {
     setSectionPigment(stageRef.current?.sampleActivePigment() ?? null)
-  }, [paintSerial, activeSectionId, image])
+  }, [paintSerial, activeSectionId, image, activeView])
 
-  const onPhoto = useCallback((photo: PhotoState) => {
-    setContentScale((current) => (current === photo.contentScale ? current : photo.contentScale))
-    setCutoutActive((current) => (current === photo.cutoutActive ? current : photo.cutoutActive))
+  const updateView = useCallback((id: ViewSlotId, recipe: (view: ViewRecord) => ViewRecord) => {
+    setViews((current) => {
+      const next = recipe(current[id])
+      if (next === current[id]) return current
+      return { ...current, [id]: next }
+    })
   }, [])
 
-  const onSections = useCallback((list: SectionInfo[], activeId: string | null) => {
-    setSections(list)
-    setActiveSectionId(activeId)
+  const selectView = useCallback((id: ViewSlotId) => {
+    activeViewRef.current = id
+    stageRef.current = stagesRef.current[id] ?? null
+    setActiveView((current) => (current === id ? current : id))
   }, [])
 
-  const onHistory = useCallback((next: HistoryState) => {
-    setPaintSerial((current) => current + 1)
-    setHistory((current) =>
-      current.canUndo === next.canUndo &&
-      current.canRedo === next.canRedo &&
-      current.hasPaint === next.hasPaint
-        ? current
-        : next,
-    )
-  }, [])
+  const openPicker = useCallback(
+    (id: ViewSlotId) => {
+      loadTargetRef.current = id
+      selectView(id)
+      fileRef.current?.click()
+    },
+    [selectView],
+  )
 
   const remember = useCallback((hex: string) => {
     const next = normalizeHex(hex)
@@ -189,7 +224,7 @@ export function App() {
   }, [])
 
   const loadFile = useCallback(
-    async (file: File) => {
+    async (file: File, slot: ViewSlotId) => {
       const url = URL.createObjectURL(file)
       try {
         const element = await decodeImage(url)
@@ -202,13 +237,17 @@ export function App() {
           return
         }
         const next = { url, name: file.name, width, height, element }
-        const previousUrl = imageRef.current?.url
+        const previousUrl = viewsRef.current[slot].image?.url
         if (previousUrl) URL.revokeObjectURL(previousUrl)
         window.clearTimeout(cutoutTimer.current)
-        setCutoutActive(false)
-        setImage(next)
-        setHistory(EMPTY_HISTORY)
-        flash(`Loaded ${file.name}`)
+        activeViewRef.current = slot
+        stageRef.current = stagesRef.current[slot] ?? null
+        setActiveView(slot)
+        setViews((current) => ({
+          ...current,
+          [slot]: { ...blankView(), image: next },
+        }))
+        flash(`Loaded ${file.name} into ${viewSlotById(slot).label}`)
       } catch {
         URL.revokeObjectURL(url)
         flash('Could not read that image. Use a PNG, JPEG, WebP, or GIF.')
@@ -218,18 +257,23 @@ export function App() {
   )
 
   const requestLoad = useCallback(
-    (file: File) => {
+    (file: File, slot?: ViewSlotId) => {
       if (!isImageFile(file)) {
         flash('Choose a PNG, JPEG, WebP, or GIF photo.')
         return
       }
-      if (history.hasPaint || sections.length > 0) {
-        setDialog({ type: 'replace', file })
+      const target = slot ?? activeViewRef.current
+      const view = viewsRef.current[target]
+      if (view.history.hasPaint || view.sections.length > 0) {
+        activeViewRef.current = target
+        stageRef.current = stagesRef.current[target] ?? null
+        setActiveView(target)
+        setDialog({ type: 'replace', file, slot: target })
         return
       }
-      void loadFile(file)
+      void loadFile(file, target)
     },
-    [flash, history.hasPaint, loadFile, sections.length],
+    [flash, loadFile],
   )
 
   const requestLoadRef = useRef(requestLoad)
@@ -262,7 +306,7 @@ export function App() {
       const file = files?.[0]
       if (!file) return
       if ((files?.length ?? 0) > 1) flash('Using the first photo only.')
-      requestLoadRef.current(file)
+      requestLoadRef.current(file, dropSlot(event.target))
     }
     window.addEventListener('dragenter', onDragEnter)
     window.addEventListener('dragover', onDragOver)
@@ -395,9 +439,10 @@ export function App() {
   const closeDialog = useCallback(() => setDialog(null), [])
 
   const runCutout = (strength: number, announce: boolean) => {
+    const stage = stageRef.current
     setCutoutBusy(true)
     window.setTimeout(() => {
-      const result = stageRef.current?.applyCutout(strength) ?? null
+      const result = stage?.applyCutout(strength) ?? null
       setCutoutBusy(false)
       if (!announce || !result) return
       if (result.removedRatio < 0.01) {
@@ -412,10 +457,11 @@ export function App() {
 
   const onCutoutStrength = (value: number) => {
     setCutoutStrength(value)
-    if (!cutoutActive) return
+    const stage = stageRef.current
+    if (!viewsRef.current[activeViewRef.current].cutoutActive) return
     window.clearTimeout(cutoutTimer.current)
     cutoutTimer.current = window.setTimeout(() => {
-      stageRef.current?.applyCutout(value)
+      stage?.applyCutout(value)
     }, 80)
   }
   const replaceName = schemes.find((scheme) => scheme.name.toLowerCase() === draftName.trim().toLowerCase())
@@ -489,9 +535,10 @@ export function App() {
       <TopBar
         theme={theme}
         image={image}
+        viewLabel={activeLabel}
         canClear={history.hasPaint}
         cutoutActive={cutoutActive}
-        onUpload={() => fileRef.current?.click()}
+        onUpload={() => openPicker(activeViewRef.current)}
         onSave={openSave}
         onClear={() => {
           stageRef.current?.clearPaint()
@@ -518,7 +565,9 @@ export function App() {
           cutoutActive={cutoutActive}
           cutoutBusy={cutoutBusy}
           onPhotoScale={(scale) => {
-            setContentScale(scale)
+            updateView(activeViewRef.current, (view) =>
+              view.contentScale === scale ? view : { ...view, contentScale: scale },
+            )
             stageRef.current?.setContentScale(scale)
           }}
           onAutoScale={() => stageRef.current?.autoScale()}
@@ -573,36 +622,61 @@ export function App() {
           onBackdropFile={loadBackdropImage}
           onClearBackdropImage={clearBackdropImage}
         />
-        <CanvasStage
-          ref={stageRef}
-          image={image}
-          tool={tool}
-          color={color}
-          brushSize={brushSize}
-          opacity={opacity}
-          spaceHeld={spaceHeld}
-          tolerance={tolerance}
-          showEdges={showEdges}
-          edgeSnap={edgeSnap}
-          snapStrength={snapStrength}
-          maskMode={maskMode}
-          paintLook={paintLook}
-          undercoat={undercoat ? undercoatStrength : 0}
-          viewBackdrop={cutoutActive ? backdropCssColor(backdrop, backdropColor) : null}
-          backdropImage={cutoutActive ? backdropImage : null}
-          sectionChip={sectionChip}
-          onPickColor={(hex, commit) => {
-            setBrushColor(hex)
-            if (commit) remember(hex)
-          }}
-          onStroke={remember}
-          onHistory={onHistory}
-          onPhoto={onPhoto}
-          onSections={onSections}
-          onError={flash}
-          onBrowse={() => fileRef.current?.click()}
-          onRidges={setRidgesActive}
-        />
+        <div className="stage-column">
+          <ViewSlots active={activeView} views={views} onSelect={selectView} onUpload={openPicker} />
+          <div className="view-stack">
+            {VIEW_SLOTS.map((slot) => {
+              const record = views[slot.id]
+              const active = slot.id === activeView
+              return (
+                <div
+                  key={slot.id}
+                  className={active ? 'view-host is-active' : 'view-host'}
+                  inert={!active ? true : undefined}
+                  aria-hidden={active ? undefined : true}
+                >
+                  <CanvasStage
+                    ref={stageBinders.current?.[slot.id]}
+                    slotId={slot.id}
+                    slotLabel={slot.label}
+                    image={record.image}
+                    tool={tool}
+                    color={color}
+                    brushSize={brushSize}
+                    opacity={opacity}
+                    spaceHeld={spaceHeld}
+                    tolerance={tolerance}
+                    showEdges={showEdges}
+                    edgeSnap={edgeSnap}
+                    snapStrength={snapStrength}
+                    maskMode={maskMode}
+                    paintLook={paintLook}
+                    undercoat={undercoat ? undercoatStrength : 0}
+                    viewBackdrop={record.cutoutActive ? backdropCssColor(backdrop, backdropColor) : null}
+                    backdropImage={record.cutoutActive ? backdropImage : null}
+                    sectionChip={active ? sectionChip : null}
+                    onPickColor={(hex, commit) => {
+                      setBrushColor(hex)
+                      if (commit) remember(hex)
+                    }}
+                    onStroke={remember}
+                    onHistory={(next) => {
+                      if (slot.id === activeViewRef.current) setPaintSerial((current) => current + 1)
+                      updateView(slot.id, (view) => withHistory(view, next))
+                    }}
+                    onPhoto={(photo) => updateView(slot.id, (view) => withPhoto(view, photo))}
+                    onSections={(list, sectionId) =>
+                      updateView(slot.id, (view) => withSections(view, list, sectionId))
+                    }
+                    onError={flash}
+                    onBrowse={() => openPicker(slot.id)}
+                    onRidges={(ridges) => updateView(slot.id, (view) => withRidges(view, ridges))}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </div>
         <div className="side-stack">
         <div
           className="side-tabs"
@@ -754,15 +828,15 @@ export function App() {
         onChange={(event) => {
           const file = event.target.files?.[0]
           event.target.value = ''
-          if (file) requestLoad(file)
+          if (file) requestLoad(file, loadTargetRef.current)
         }}
       />
 
       {dragging && (
         <div className="drop-overlay" role="status">
           <div>
-            <strong>{image ? 'Drop to replace the photo' : 'Drop a photo to start'}</strong>
-            <p>{image ? 'Paint on the current picture will be cleared.' : 'One image. Paint stays on its own layer.'}</p>
+            <strong>{image ? `Drop to replace ${activeLabel}` : `Drop a photo into ${activeLabel}`}</strong>
+            <p>Drop onto a slot to fill that view. Other views keep their paint.</p>
           </div>
         </div>
       )}
@@ -867,8 +941,9 @@ export function App() {
                 className="btn btn-primary"
                 onClick={() => {
                   const file = dialog.file
+                  const slot = dialog.slot
                   setDialog(null)
-                  void loadFile(file)
+                  void loadFile(file, slot)
                 }}
               >
                 Replace
@@ -876,11 +951,20 @@ export function App() {
             </>
           }
         >
-          <p>The paint and sections on this photo will be cleared. Saved color schemes stay.</p>
+          <p>
+            The paint and sections on {viewSlotById(dialog.slot).label} will be cleared. Other views stay. Saved
+            color schemes stay.
+          </p>
         </Dialog>
       )}
     </div>
   )
+}
+
+function dropSlot(target: EventTarget | null): ViewSlotId | undefined {
+  if (!(target instanceof Element)) return undefined
+  const raw = target.closest('[data-view-slot]')?.getAttribute('data-view-slot')
+  return isViewSlotId(raw) ? raw : undefined
 }
 
 function clampSize(size: number): number {

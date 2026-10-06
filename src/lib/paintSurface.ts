@@ -216,7 +216,6 @@ function context2d(
  * the view and do not resample the photo. Backdrop removal keeps the original on
  * `source` and writes transparency into the sample the tint is shaded with.
  *
- * TODO(multi-angle): one photo fills the stage. A 2×2 layout is later.
  * TODO(lighting): no lighting presets on the preview.
  */
 export class PaintSurface {
