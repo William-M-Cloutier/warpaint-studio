@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CanvasStage, type StageHandle } from './components/CanvasStage'
+import { CatalogBrowser } from './components/CatalogBrowser'
 import { ColorPanel } from './components/ColorPanel'
 import { Dialog } from './components/Dialog'
 import { SectionPanel } from './components/SectionPanel'
@@ -7,7 +8,9 @@ import { TopBar } from './components/TopBar'
 import { ToolStrip } from './components/ToolStrip'
 import { useSchemes } from './hooks/useSchemes'
 import { useTheme } from './hooks/useTheme'
+import { paintById } from './lib/catalog'
 import { createId, normalizeHex, rememberColor } from './lib/color'
+import { DEFAULT_SNAP_STRENGTH } from './lib/edgeSnap'
 import { decodeImage, isImageFile, photoTooLarge } from './lib/imageFile'
 import { loadPrefs, savePrefs } from './lib/storage'
 import type {
@@ -32,13 +35,31 @@ type DialogState =
 
 type Notice = { id: number; text: string }
 
+type SideTab = 'color' | 'sections' | 'catalog'
+
+const SIDE_TABS: { id: SideTab; label: string }[] = [
+  { id: 'color', label: 'Color' },
+  { id: 'sections', label: 'Sections' },
+  { id: 'catalog', label: 'Catalog' },
+]
+
 const EMPTY_HISTORY: HistoryState = { canUndo: false, canRedo: false, hasPaint: false }
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   if (target.isContentEditable) return true
-  const tag = target.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+  if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return true
+  if (!(target instanceof HTMLInputElement)) return false
+  const type = target.type
+  return (
+    type === 'text' ||
+    type === 'search' ||
+    type === 'email' ||
+    type === 'url' ||
+    type === 'password' ||
+    type === 'number' ||
+    type === 'tel'
+  )
 }
 
 function isFileDrag(event: DragEvent): boolean {
@@ -72,7 +93,12 @@ export function App() {
   const [maskMode, setMaskMode] = useState<MaskMode>('new')
   const [tolerance, setTolerance] = useState(48)
   const [showEdges, setShowEdges] = useState(false)
+  const [edgeSnap, setEdgeSnap] = useState(false)
+  const [snapStrength, setSnapStrength] = useState(DEFAULT_SNAP_STRENGTH)
+  const [ridgesActive, setRidgesActive] = useState(false)
+  const [pickedId, setPickedId] = useState<string | null>(null)
   const [proposeBusy, setProposeBusy] = useState(false)
+  const [sideTab, setSideTab] = useState<SideTab>('color')
 
   const stageRef = useRef<StageHandle>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -128,6 +154,15 @@ export function App() {
     const next = normalizeHex(hex)
     if (!next) return
     setRecent((current) => rememberColor(current, next))
+  }, [])
+
+  const setBrushColor = useCallback((hex: string) => {
+    setColor(hex)
+    setPickedId((id) => {
+      if (!id) return null
+      const paint = paintById(id)
+      return paint && paint.hex === hex ? id : null
+    })
   }, [])
 
   const loadFile = useCallback(
@@ -247,6 +282,18 @@ export function App() {
         return
       }
       if (mod || event.altKey) return
+      const bracket =
+        event.code === 'BracketLeft' || event.key === '[' || event.key === '{'
+          ? -1
+          : event.code === 'BracketRight' || event.key === ']' || event.key === '}'
+            ? 1
+            : 0
+      if (bracket !== 0) {
+        event.preventDefault()
+        const step = event.shiftKey ? 10 : 2
+        setBrushSize((size) => clampSize(size + bracket * step))
+        return
+      }
       if (event.code === 'Digit0') {
         event.preventDefault()
         if (event.shiftKey) stageRef.current?.autoScale()
@@ -257,13 +304,20 @@ export function App() {
       else if (key === 'e' || key === '2') setTool('eraser')
       else if (key === 'i' || key === '3') setTool('eyedropper')
       else if (key === 'h' || key === '4') setTool('pan')
+      else if (key === 'f') stageRef.current?.fillSection()
       else if (key === 'r') setTool('restore')
       else if (key === 'x') setTool('eraseBackdrop')
-      else if (key === 'w') setTool('wand')
-      else if (key === 'l') setTool('lasso')
-      else if (key === 'm') setTool('maskBrush')
-      else if (event.key === '[') setBrushSize((size) => clampSize(size - (event.shiftKey ? 10 : 2)))
-      else if (event.key === ']') setBrushSize((size) => clampSize(size + (event.shiftKey ? 10 : 2)))
+      else if (key === 'w') {
+        setTool('wand')
+        setSideTab('sections')
+      } else if (key === 'l') {
+        setTool('lasso')
+        setSideTab('sections')
+      } else if (key === 'm') {
+        setTool('maskBrush')
+        setSideTab('sections')
+      }
+      else if (key === 's') setEdgeSnap((enabled) => !enabled)
     }
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.code === 'Space') releaseSpace()
@@ -308,7 +362,10 @@ export function App() {
 
   const loadScheme = (scheme: ColorScheme) => {
     setPalette(scheme.colors.map((entry) => ({ ...entry, id: createId() })))
-    if (scheme.colors[0]) setColor(scheme.colors[0].hex)
+    if (scheme.colors[0]) {
+      setColor(scheme.colors[0].hex)
+      setPickedId(null)
+    }
     flash(`Loaded “${scheme.name}”`)
   }
 
@@ -413,6 +470,17 @@ export function App() {
             stageRef.current?.resetCutout()
             flash('Cutout reset')
           }}
+          edgeSnap={edgeSnap}
+          snapStrength={snapStrength}
+          onEdgeSnap={setEdgeSnap}
+          onSnapStrength={setSnapStrength}
+          showEdgeSnap={
+            tool === 'brush' ||
+            tool === 'eraser' ||
+            tool === 'highlight' ||
+            ((tool === 'lasso' || tool === 'maskBrush') && sideTab !== 'sections')
+          }
+          onFill={() => stageRef.current?.fillSection()}
         />
         <CanvasStage
           ref={stageRef}
@@ -424,10 +492,12 @@ export function App() {
           spaceHeld={spaceHeld}
           tolerance={tolerance}
           showEdges={showEdges}
+          edgeSnap={edgeSnap}
+          snapStrength={snapStrength}
           maskMode={maskMode}
           sectionChip={sectionChip}
           onPickColor={(hex, commit) => {
-            setColor(hex)
+            setBrushColor(hex)
             if (commit) remember(hex)
           }}
           onStroke={remember}
@@ -436,8 +506,47 @@ export function App() {
           onSections={onSections}
           onError={flash}
           onBrowse={() => fileRef.current?.click()}
+          onRidges={setRidgesActive}
         />
         <div className="side-stack">
+        <div
+          className="side-tabs"
+          role="tablist"
+          aria-label="Side panels"
+          onKeyDown={(event) => {
+            const index = SIDE_TABS.findIndex((entry) => entry.id === sideTab)
+            if (index < 0) return
+            if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
+            event.preventDefault()
+            const step = event.key === 'ArrowRight' ? 1 : -1
+            const next = SIDE_TABS[(index + step + SIDE_TABS.length) % SIDE_TABS.length]
+            setSideTab(next.id)
+            document.getElementById(`side-tab-${next.id}`)?.focus()
+          }}
+        >
+          {SIDE_TABS.map((entry) => (
+            <button
+              key={entry.id}
+              id={`side-tab-${entry.id}`}
+              type="button"
+              className="side-tab"
+              role="tab"
+              aria-selected={sideTab === entry.id}
+              aria-controls={`side-panel-${entry.id}`}
+              tabIndex={sideTab === entry.id ? 0 : -1}
+              onClick={() => setSideTab(entry.id)}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+        <div
+          className="side-tabpanel"
+          role="tabpanel"
+          id="side-panel-sections"
+          aria-labelledby="side-tab-sections"
+          hidden={sideTab !== 'sections'}
+        >
         <SectionPanel
           hasImage={image !== null}
           tool={tool}
@@ -450,7 +559,10 @@ export function App() {
           onTool={setTool}
           onMaskMode={setMaskMode}
           onTolerance={setTolerance}
-          onShowEdges={setShowEdges}
+          onShowEdges={(value) => {
+            setShowEdges(value)
+            if (!value && (tool === 'edgeAdd' || tool === 'edgeErase')) setTool('brush')
+          }}
           onSelect={(id) => stageRef.current?.selectSection(id)}
           onRename={(id, name) => stageRef.current?.renameSection(id, name)}
           onCategory={labelSection}
@@ -458,18 +570,41 @@ export function App() {
           onLocked={(id, locked) => stageRef.current?.setSectionLocked(id, locked)}
           onDelete={(id) => stageRef.current?.deleteSection(id)}
           onPropose={proposeSections}
+          hasRidges={ridgesActive}
+          onRidgeTool={(next) => {
+            setShowEdges(true)
+            setSideTab('sections')
+            setTool(next)
+          }}
+          onClearRidges={() => stageRef.current?.clearRidges()}
+          edgeSnap={edgeSnap}
+          snapStrength={snapStrength}
+          onEdgeSnap={setEdgeSnap}
+          onSnapStrength={setSnapStrength}
+          brushSize={brushSize}
+          onBrushSize={setBrushSize}
         />
+        </div>
+        <div
+          className="side-tabpanel"
+          role="tabpanel"
+          id="side-panel-color"
+          aria-labelledby="side-tab-color"
+          hidden={sideTab !== 'color'}
+        >
         <ColorPanel
           color={color}
           recent={recent}
           palette={palette}
           schemes={schemes}
-          onColor={setColor}
+          onColor={setBrushColor}
           onRemember={remember}
           onAdd={() => {
+            const picked = pickedId ? paintById(pickedId) : null
+            const label = picked && picked.hex === color ? picked.name.slice(0, 40) : ''
             setPalette((current) => {
               if (current.some((entry) => entry.hex === color)) return current
-              return [...current, { id: createId(), hex: color, label: '' }]
+              return [...current, { id: createId(), hex: color, label }]
             })
           }}
           onLabel={(id, label) => {
@@ -481,7 +616,27 @@ export function App() {
           onSave={openSave}
           onLoad={loadScheme}
           onAskDelete={(scheme) => setDialog({ type: 'delete', scheme })}
+          pickedPaint={pickedId ? paintById(pickedId) : null}
         />
+        </div>
+        <div
+          className="side-tabpanel"
+          role="tabpanel"
+          id="side-panel-catalog"
+          aria-labelledby="side-tab-catalog"
+          hidden={sideTab !== 'catalog'}
+        >
+          <aside className="panel catalog-panel" aria-label="Paint catalog">
+            <CatalogBrowser
+              pickedId={pickedId}
+              onPick={(paint) => {
+                setColor(paint.hex)
+                setPickedId(paint.id)
+                remember(paint.hex)
+              }}
+            />
+          </aside>
+        </div>
         </div>
       </div>
 

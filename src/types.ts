@@ -3,11 +3,14 @@ export type Tool =
   | 'eraser'
   | 'eyedropper'
   | 'pan'
+  | 'highlight'
   | 'restore'
   | 'eraseBackdrop'
   | 'wand'
   | 'lasso'
   | 'maskBrush'
+  | 'edgeAdd'
+  | 'edgeErase'
 
 /** How a wand, lasso, or mask brush writes into a section. */
 export type MaskMode = 'new' | 'add' | 'subtract'

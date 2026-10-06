@@ -15,19 +15,9 @@ export const ROADMAP: readonly RoadmapItem[] = [
     note: 'After a cutout exists, place the miniature on a chosen viewing background.',
   },
   {
-    id: 'edge-snap',
-    title: 'Soft edge snap',
-    note: 'A separate mode that pulls a stroke toward photo edges. Section masks already keep paint inside a region.',
-  },
-  {
     id: 'paint-suggestions',
     title: 'Suggested paints and highlights',
     note: 'Offer highlight and shade suggestions from a chosen base color.',
-  },
-  {
-    id: 'paint-catalog',
-    title: 'Paint catalog',
-    note: 'Major ranges such as Citadel, with quality and comparison notes. V1 swatches are not that catalog.',
   },
   {
     id: 'lighting',

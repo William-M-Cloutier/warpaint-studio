@@ -1,6 +1,17 @@
 import { canvasToBitmap } from './canvasPoint'
+import { highlightColor } from './color'
+import { extendStroke, type LineLock } from './constrain'
 import { clampCutoutStrength, projectCutout, removeBackdrop, repairCutout } from './cutout'
-import { selectionEdges } from './edgeSelect'
+import { RidgeLayer, ridgeAlpha, type RidgeStroke } from './edgeEdits'
+import { edgeGuide, selectionEdges } from './edgeSelect'
+import {
+  DEFAULT_SNAP_STRENGTH,
+  biasStrokePoint,
+  buildBarrierGrid,
+  gridFromBarriers,
+  snapMargin,
+  type SnapGrid,
+} from './edgeSnap'
 import { clampPhotoScale, fitPhotoScale } from './photoScale'
 import { MAX_SECTION_HISTORY, SectionLayer } from './sectionLayer'
 import { compositeSurface, sampleTintHex } from './tint'
@@ -8,6 +19,7 @@ import {
   MAX_HISTORY,
   clampBounds,
   historyHasPaint,
+  paintSectionFill,
   paintStroke,
   projectActions,
   strokeBounds,
@@ -40,6 +52,8 @@ export type SurfaceConfig = {
   tolerance: number
   maskMode: MaskMode
   showEdges: boolean
+  edgeSnap: boolean
+  snapStrength: number
 }
 
 type SurfaceEvents = {
@@ -50,6 +64,7 @@ type SurfaceEvents = {
   stroke: (hex: string) => void
   error: (message: string) => void
   sections: (sections: SectionInfo[], activeId: string | null) => void
+  ridges: (active: boolean) => void
 }
 
 type Hist = {
@@ -66,6 +81,10 @@ type DrawSession = {
   pointerId: number
   stroke: Stroke
   prevBounds: Bounds | null
+  snap: SnapGrid | null
+  snapStrength: number
+  margin: number
+  line: LineLock | null
 }
 
 type PanSession = {
@@ -95,6 +114,7 @@ type MaskSession = {
   pointerId: number
   stroke: MaskStroke
   prevBounds: Bounds | null
+  line: LineLock | null
 }
 
 type LassoSession = {
@@ -102,6 +122,10 @@ type LassoSession = {
   pointerId: number
   points: Point[]
   maskMode: MaskMode
+  snap: SnapGrid | null
+  snapStrength: number
+  margin: number
+  line: LineLock | null
 }
 
 type WandSession = {
@@ -116,11 +140,30 @@ type SectionBrushSession = {
   size: number
   opacity: number
   prevBounds: Bounds | null
+  snap: SnapGrid | null
+  snapStrength: number
+  margin: number
+  line: LineLock | null
 }
 
-type Session = DrawSession | PanSession | PickSession | MaskSession | LassoSession | WandSession | SectionBrushSession
+type RidgeSession = {
+  mode: 'ridge'
+  pointerId: number
+  stroke: RidgeStroke
+  line: LineLock | null
+}
 
-type TimelineKind = 'paint' | 'mask' | 'section'
+type Session =
+  | DrawSession
+  | PanSession
+  | PickSession
+  | MaskSession
+  | LassoSession
+  | WandSession
+  | SectionBrushSession
+  | RidgeSession
+
+type TimelineKind = 'paint' | 'mask' | 'section' | 'ridge'
 
 function isMaskTool(tool: Tool): tool is MaskTool {
   return tool === 'restore' || tool === 'eraseBackdrop'
@@ -130,8 +173,20 @@ function isSectionTool(tool: Tool): tool is 'wand' | 'lasso' | 'maskBrush' {
   return tool === 'wand' || tool === 'lasso' || tool === 'maskBrush'
 }
 
+function isRidgeTool(tool: Tool): tool is 'edgeAdd' | 'edgeErase' {
+  return tool === 'edgeAdd' || tool === 'edgeErase'
+}
+
 function showsBrushRing(tool: Tool, space: boolean): boolean {
-  return !space && (tool === 'brush' || tool === 'eraser' || tool === 'maskBrush' || isMaskTool(tool))
+  return (
+    !space &&
+    (tool === 'brush' || tool === 'eraser' || tool === 'highlight' || tool === 'maskBrush' || isMaskTool(tool) || isRidgeTool(tool))
+  )
+}
+
+function lineFrom(point: Point, shiftKey: boolean): LineLock | null {
+  if (!shiftKey) return null
+  return { index: 0, anchor: { x: point.x, y: point.y } }
 }
 
 const MIN_ZOOM = 0.02
@@ -156,7 +211,6 @@ function context2d(
  * the view and do not resample the photo. Backdrop removal keeps the original on
  * `source` and writes transparency into the sample the tint is shaded with.
  *
- * TODO(edge-snap): section masks clip paint, but a stroke does not pull itself onto photo edges.
  * TODO(view-backgrounds): no replacement backdrop. The viewport checkerboard shows through a cutout.
  * TODO(multi-angle): one photo fills the stage. A 2×2 layout is later.
  * TODO(lighting): no lighting presets on the preview.
@@ -196,9 +250,14 @@ export class PaintSurface {
   private space = false
   private tolerance = 48
   private showEdges = false
+  private edgeSnap = false
+  private snapStrength = DEFAULT_SNAP_STRENGTH
   private edgeMask: Uint8Array | null = null
   private maskMode: MaskMode = 'new'
   private readonly sections = new SectionLayer()
+  private readonly ridges = new RidgeLayer()
+  private snapCache: { tolerance: number; mask: Uint8Array | null; serial: number; grid: SnapGrid } | null = null
+  private snapSerial = 0
   private overlayCtx: CanvasRenderingContext2D | null = null
   /** Alpha of the cutout sample. Replaced, never mutated, so old strokes keep their clip. */
   private cutoutAlpha: Uint8Array | null = null
@@ -241,15 +300,23 @@ export class PaintSurface {
   }
 
   configure(config: SurfaceConfig): void {
+    const sizeChanged = config.brushSize !== this.brushSize
     this.tool = config.tool
     this.color = config.color
     this.brushSize = config.brushSize
     this.opacity = config.opacity
+    // Resize an in-progress stroke only when the size control changes.
+    // Every render calls configure, and a live canvas measurement was
+    // rewriting the dab whenever layout disagreed for a frame.
+    if (sizeChanged) this.applyLiveBrushSize()
     this.space = config.space
     const edgesDirty =
       config.showEdges !== this.showEdges || (config.showEdges && config.tolerance !== this.tolerance)
+    if (config.tolerance !== this.tolerance) this.invalidateSnap()
     this.tolerance = config.tolerance
     this.showEdges = config.showEdges
+    this.edgeSnap = config.edgeSnap
+    this.snapStrength = config.snapStrength
     this.maskMode = config.maskMode
     if (this.ring && !showsBrushRing(config.tool, config.space)) {
       this.ring.style.visibility = 'hidden'
@@ -277,6 +344,8 @@ export class PaintSurface {
     this.timeline = []
     this.timelineFuture = []
     this.sections.reset(image ? image.width : 0, image ? image.height : 0)
+    this.ridges.reset(image ? image.width : 0, image ? image.height : 0)
+    this.invalidateSnap()
     this.clearDisplay()
     this.clearOverlay()
     if (!image) {
@@ -284,6 +353,7 @@ export class PaintSurface {
       this.contentScale = 1
       this.photoCtx?.clearRect(0, 0, this.photo.width, this.photo.height)
       this.emitSections()
+      this.emitRidges()
       this.emitHistory()
       this.emitPhoto()
       this.emitView()
@@ -294,6 +364,7 @@ export class PaintSurface {
     if (!sourceCtx || !this.sampleCtx || !this.photoCtx) {
       this.emit.error('Could not prepare that photo.')
       this.emitSections()
+      this.emitRidges()
       this.emitHistory()
       this.emitPhoto()
       return
@@ -313,6 +384,7 @@ export class PaintSurface {
     }
     this.rememberMaskBase()
     this.emitSections()
+    this.emitRidges()
     this.emitHistory()
     this.fitAttempts = 0
     this.autoScale()
@@ -450,6 +522,7 @@ export class PaintSurface {
     this.present(null)
     this.emitPhoto()
     this.emitHistory()
+    this.invalidateSnap()
     this.rebuildEdges()
     return stats
   }
@@ -485,6 +558,7 @@ export class PaintSurface {
     this.present(null)
     this.emitPhoto()
     this.emitHistory()
+    this.invalidateSnap()
     this.rebuildEdges()
   }
 
@@ -510,6 +584,7 @@ export class PaintSurface {
     this.timelineFuture.push(kind)
     if (kind === 'paint') this.stepPaint(-1)
     else if (kind === 'mask') this.stepMask(-1)
+    else if (kind === 'ridge') this.stepRidge(-1)
     else this.stepSection(-1)
   }
 
@@ -519,6 +594,7 @@ export class PaintSurface {
     this.timeline.push(kind)
     if (kind === 'paint') this.stepPaint(1)
     else if (kind === 'mask') this.stepMask(1)
+    else if (kind === 'ridge') this.stepRidge(1)
     else this.stepSection(1)
   }
 
@@ -593,11 +669,48 @@ export class PaintSurface {
     this.noteSectionEdit()
   }
 
+  /** Coat the active section with the current pigment. The photo still supplies light and shadow. */
+  fillSection(): void {
+    if (!this.image || !this.tintCtx || !this.hist || this.disposed) return
+    const clipTarget = this.sections.clipForPaint(this.cutoutActive ? this.cutoutAlpha : null)
+    if (clipTarget.blocked) {
+      this.emit.error(clipTarget.blocked)
+      return
+    }
+    const clip = clipTarget.clip
+    if (!clip) {
+      this.emit.error('Select a section to fill.')
+      return
+    }
+    let covered = false
+    for (let i = 0; i < clip.mask.length; i += 1) {
+      if (clip.mask[i] > 0) {
+        covered = true
+        break
+      }
+    }
+    if (!covered) {
+      this.emit.error('That section is empty.')
+      return
+    }
+    const fill = { color: this.color, opacity: this.opacity, clip }
+    paintSectionFill(this.tintCtx, fill)
+    this.present(null)
+    this.push({ kind: 'fill', fill })
+    this.emit.stroke(this.color)
+    this.emitHistory()
+  }
+
+  clearRidges(): void {
+    if (!this.ridges.clear()) return
+    this.noteRidgeEdit()
+  }
+
   proposeSections(): number {
     if (!this.image || !this.sampleCtx || this.disposed) return 0
     const pixels = this.readSample()
     if (!pixels) return 0
-    const count = this.sections.propose(pixels.data)
+    const count = this.sections.propose(pixels.data, this.ridgeEdits())
     if (count > 0) this.noteSectionEdit()
     else {
       this.refreshOverlay(null, null)
@@ -638,6 +751,11 @@ export class PaintSurface {
     this.overlayCtx = context2d(this.overlay)
   }
 
+  private invalidateSnap(): void {
+    this.snapCache = null
+    this.snapSerial += 1
+  }
+
   private copySourceToSample(): void {
     const ctx = this.sampleCtx
     if (!ctx) return
@@ -645,6 +763,7 @@ export class PaintSurface {
     ctx.globalCompositeOperation = 'source-over'
     ctx.clearRect(0, 0, this.sample.width, this.sample.height)
     ctx.drawImage(this.source, 0, 0)
+    this.invalidateSnap()
   }
 
   private presentPhoto(bounds?: Bounds | null): void {
@@ -734,6 +853,11 @@ export class PaintSurface {
     const point = this.toImage(event.clientX, event.clientY)
     if (!point) return
 
+    if (isRidgeTool(this.tool)) {
+      this.startRidge(event, point)
+      return
+    }
+
     if (isSectionTool(this.tool)) {
       this.startSection(event, point)
       return
@@ -750,33 +874,43 @@ export class PaintSurface {
     if (isMaskTool(this.tool)) {
       const stroke: MaskStroke = {
         tool: this.tool,
-        size: Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5),
+        size: this.strokeWidth(),
         opacity: this.opacity,
         points: [point],
       }
       this.snapshotMask()
-      this.session = { mode: 'mask', pointerId: event.pointerId, stroke, prevBounds: null }
+      this.session = { mode: 'mask', pointerId: event.pointerId, stroke, prevBounds: null, line: lineFrom(point, event.shiftKey) }
       this.scheduleDraw()
       this.capture(event)
       return
     }
 
-    if (this.tool !== 'brush' && this.tool !== 'eraser') return
+    if (this.tool !== 'brush' && this.tool !== 'eraser' && this.tool !== 'highlight') return
     const clipTarget = this.sections.clipForPaint(this.cutoutActive ? this.cutoutAlpha : null)
     if (clipTarget.blocked) {
       this.emit.error(clipTarget.blocked)
       return
     }
+    const size = this.strokeWidth()
+    const hug = this.strokeSnap(size, clipTarget.clip?.mask ?? null)
+    const start = event.shiftKey ? point : this.biasSnapped(hug, point, point)
     const stroke: Stroke = {
-      tool: this.tool,
-      color: this.color,
-      size: Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5),
+      tool: this.tool === 'eraser' ? 'eraser' : 'brush',
+      color: this.tool === 'highlight' ? highlightColor(this.color) : this.color,
+      size,
       opacity: this.opacity,
-      points: [point],
+      points: [start],
       clip: clipTarget.clip ?? undefined,
     }
     this.snapshotBackup()
-    this.session = { mode: 'draw', pointerId: event.pointerId, stroke, prevBounds: null }
+    this.session = {
+      mode: 'draw',
+      pointerId: event.pointerId,
+      stroke,
+      prevBounds: null,
+      line: lineFrom(start, event.shiftKey),
+      ...hug,
+    }
     this.scheduleDraw()
     this.capture(event)
   }
@@ -807,22 +941,35 @@ export class PaintSurface {
     }
 
     if (session.mode === 'wand') return
-    if (session.mode !== 'draw' && session.mode !== 'mask' && session.mode !== 'lasso' && session.mode !== 'section-brush') {
+    if (
+      session.mode !== 'draw' &&
+      session.mode !== 'mask' &&
+      session.mode !== 'lasso' &&
+      session.mode !== 'section-brush' &&
+      session.mode !== 'ridge'
+    ) {
       return
     }
 
-    const samples = event.getCoalescedEvents?.() ?? [event]
+    const shiftKey = event.shiftKey
+    const samples = shiftKey ? [event] : (event.getCoalescedEvents?.() ?? [event])
     let added = false
     for (const sample of samples) {
-      const point = this.toImage(sample.clientX, sample.clientY)
+      let point = this.toImage(sample.clientX, sample.clientY)
       if (!point) continue
-      const points = session.mode === 'lasso' || session.mode === 'section-brush' ? session.points : session.stroke.points
-      const last = points[points.length - 1]
-      const dx = point.x - last.x
-      const dy = point.y - last.y
-      if (dx * dx + dy * dy < 0.36) continue
-      points.push(point)
-      added = true
+      const points =
+        session.mode === 'lasso' || session.mode === 'section-brush' ? session.points : session.stroke.points
+      if (
+        !shiftKey &&
+        (session.mode === 'draw' || session.mode === 'lasso' || session.mode === 'section-brush') &&
+        session.snap
+      ) {
+        const last = points[points.length - 1]
+        point = this.clampImage(biasStrokePoint(session.snap, last, point, session.snapStrength, session.margin))
+      }
+      const next = extendStroke(points, session.line, point, shiftKey)
+      session.line = next.line
+      if (next.changed) added = true
     }
     if (added) this.scheduleDraw()
   }
@@ -844,6 +991,10 @@ export class PaintSurface {
     }
     if (session.mode === 'section-brush') {
       this.finishSectionBrush()
+      return
+    }
+    if (session.mode === 'ridge') {
+      this.finishRidge(session)
       return
     }
     if (session.mode === 'wand') {
@@ -894,6 +1045,7 @@ export class PaintSurface {
       else if (session.mode === 'mask') this.renderMask(session)
       else if (session.mode === 'section-brush') this.renderSectionBrush(session)
       else if (session.mode === 'lasso') this.refreshOverlay(null, session.points)
+      else if (session.mode === 'ridge') this.renderRidge(session)
     })
   }
 
@@ -986,6 +1138,8 @@ export class PaintSurface {
     this.timeline.push('mask')
     this.timelineFuture = []
     this.sections.abandonRedo()
+    this.ridges.abandonRedo()
+    this.invalidateSnap()
     this.syncCutoutAlpha()
     if (!this.cutoutActive) {
       this.cutoutActive = true
@@ -1096,6 +1250,7 @@ export class PaintSurface {
     this.presentPhoto(null)
     this.present(null)
     this.syncCutoutAlpha()
+    this.invalidateSnap()
     this.emitHistory()
   }
 
@@ -1105,7 +1260,7 @@ export class PaintSurface {
       this.session = { mode: 'wand', pointerId: event.pointerId }
       this.capture(event)
       if (!pixels) return
-      const result = this.sections.wand(pixels.data, point.x, point.y, this.tolerance, this.maskMode)
+      const result = this.sections.wand(pixels.data, point.x, point.y, this.tolerance, this.maskMode, this.ridgeEdits())
       if (!result.ok) {
         this.emit.error(result.reason)
         this.refreshOverlay(null, null)
@@ -1116,8 +1271,18 @@ export class PaintSurface {
     }
 
     if (this.tool === 'lasso') {
-      this.session = { mode: 'lasso', pointerId: event.pointerId, points: [point], maskMode: this.maskMode }
-      this.refreshOverlay(null, [point])
+      const size = this.strokeWidth()
+      const hug = this.strokeSnap(size, this.sectionSnapMask())
+      const start = event.shiftKey ? point : this.biasSnapped(hug, point, point)
+      this.session = {
+        mode: 'lasso',
+        pointerId: event.pointerId,
+        points: [start],
+        maskMode: this.maskMode,
+        line: lineFrom(start, event.shiftKey),
+        ...hug,
+      }
+      this.refreshOverlay(null, [start])
       this.capture(event)
       return
     }
@@ -1127,14 +1292,18 @@ export class PaintSurface {
       this.emit.error(started.reason)
       return
     }
-    const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
+    const size = this.strokeWidth()
+    const hug = this.strokeSnap(size, this.sectionSnapMask())
+    const start = event.shiftKey ? point : this.biasSnapped(hug, point, point)
     this.session = {
       mode: 'section-brush',
       pointerId: event.pointerId,
-      points: [point],
+      points: [start],
       size,
       opacity: this.opacity,
       prevBounds: null,
+      line: lineFrom(start, event.shiftKey),
+      ...hug,
     }
     this.scheduleDraw()
     this.capture(event)
@@ -1210,9 +1379,153 @@ export class PaintSurface {
     return { alpha, x: box.x, y: box.y, w: box.w, h: box.h }
   }
 
+  private startRidge(event: PointerEvent, point: Point): void {
+    const stroke: RidgeStroke = {
+      tool: this.tool === 'edgeErase' ? 'erase' : 'add',
+      size: this.strokeWidth(),
+      points: [point],
+    }
+    this.session = { mode: 'ridge', pointerId: event.pointerId, stroke, line: lineFrom(point, event.shiftKey) }
+    this.renderRidge(this.session)
+    this.capture(event)
+  }
+
+  private finishRidge(session: RidgeSession): void {
+    if (this.raf) {
+      cancelAnimationFrame(this.raf)
+      this.raf = 0
+    }
+    this.session = null
+    this.viewport.classList.remove('is-panning')
+    if (!this.ridges.commit(session.stroke)) {
+      this.refreshOverlay(null, null)
+      return
+    }
+    this.noteRidgeEdit()
+  }
+
+  private renderRidge(session: RidgeSession): void {
+    this.refreshOverlay(null, null)
+    this.paintRidgePreview(session.stroke)
+  }
+
+  private paintRidgePreview(stroke: RidgeStroke): void {
+    const ctx = this.overlayCtx
+    const stamp = ridgeAlpha(this.overlay.width, this.overlay.height, stroke)
+    if (!ctx || !stamp) return
+    const image = ctx.getImageData(stamp.x, stamp.y, stamp.w, stamp.h)
+    const data = image.data
+    for (let i = 0; i < stamp.alpha.length; i += 1) {
+      if (stamp.alpha[i] === 0) continue
+      const offset = i * 4
+      if (stroke.tool === 'erase') {
+        data[offset + 3] = 0
+      } else {
+        data[offset] = 255
+        data[offset + 1] = 214
+        data[offset + 2] = 64
+        data[offset + 3] = 230
+      }
+    }
+    ctx.putImageData(image, stamp.x, stamp.y)
+  }
+
+  private noteRidgeEdit(): void {
+    this.timeline.push('ridge')
+    this.timelineFuture = []
+    this.sections.abandonRedo()
+    this.invalidateSnap()
+    while (this.ridges.pastCount > MAX_SECTION_HISTORY) {
+      this.ridges.dropOldest()
+      const index = this.timeline.indexOf('ridge')
+      if (index >= 0) this.timeline.splice(index, 1)
+    }
+    this.rebuildEdges()
+    this.emitRidges()
+    this.emitHistory()
+  }
+
+  private stepRidge(direction: -1 | 1): void {
+    const changed = direction < 0 ? this.ridges.undo() : this.ridges.redo()
+    if (!changed) return
+    this.invalidateSnap()
+    this.rebuildEdges()
+    this.emitRidges()
+    this.emitHistory()
+  }
+
+  private ridgeEdits() {
+    return this.ridges.hasEdits ? this.ridges.maps : null
+  }
+
+  /** Ridges always. The active section is a barrier only while adding to it or subtracting from it. */
+  private sectionSnapMask(): Uint8Array | null {
+    if (this.maskMode === 'new') return null
+    return this.sections.clipForPaint(null).clip?.mask ?? null
+  }
+
+  private strokeSnap(size: number, sectionMask: Uint8Array | null): {
+    snap: SnapGrid | null
+    snapStrength: number
+    margin: number
+  } {
+    const snap = this.edgeSnap ? this.snapGrid(sectionMask) : null
+    return {
+      snap,
+      snapStrength: this.snapStrength,
+      margin: snap ? snapMargin(size) : 0,
+    }
+  }
+
+  private biasSnapped(
+    hug: { snap: SnapGrid | null; snapStrength: number; margin: number },
+    prev: Point,
+    point: Point,
+  ): Point {
+    if (!hug.snap) return point
+    return this.clampImage(biasStrokePoint(hug.snap, prev, point, hug.snapStrength, hug.margin))
+  }
+
+  private snapGrid(sectionMask: Uint8Array | null): SnapGrid | null {
+    const cached = this.snapCache
+    if (
+      cached &&
+      cached.tolerance === this.tolerance &&
+      cached.mask === sectionMask &&
+      cached.serial === this.snapSerial
+    ) {
+      return cached.grid
+    }
+    const pixels = this.readSample()
+    if (!pixels) return null
+    const guide = edgeGuide(pixels.data, this.sample.width, this.sample.height, this.tolerance, this.ridgeEdits())
+    if (guide.width < 1 || guide.height < 1) return null
+    const barrier = buildBarrierGrid(
+      guide.wall,
+      guide.subject,
+      guide.width,
+      guide.height,
+      guide.scale,
+      guide.fullWidth,
+      guide.fullHeight,
+      sectionMask,
+    )
+    const grid = gridFromBarriers(barrier, guide.width, guide.height, guide.scale)
+    this.snapCache = { tolerance: this.tolerance, mask: sectionMask, serial: this.snapSerial, grid }
+    return grid
+  }
+
+  private clampImage(point: Point): Point {
+    return {
+      x: Math.max(0, Math.min(this.sample.width - 1, point.x)),
+      y: Math.max(0, Math.min(this.sample.height - 1, point.y)),
+    }
+  }
+
   private noteSectionEdit(): void {
     this.timeline.push('section')
     this.timelineFuture = []
+    this.ridges.abandonRedo()
     while (this.sections.pastCount > MAX_SECTION_HISTORY) {
       this.sections.dropOldest()
       const index = this.timeline.indexOf('section')
@@ -1280,6 +1593,10 @@ export class PaintSurface {
     this.emit.sections(this.sections.list(), this.sections.activeId)
   }
 
+  private emitRidges(): void {
+    this.emit.ridges(this.ridges.hasEdits)
+  }
+
   private clearDisplay(): void {
     this.displayCtx?.clearRect(0, 0, this.display.width, this.display.height)
   }
@@ -1314,7 +1631,10 @@ export class PaintSurface {
     ctx.clearRect(0, 0, this.tint.width, this.tint.height)
     const projected = projectActions(hist.actions)
     if (projected.includeBase && hist.base) ctx.drawImage(hist.base, 0, 0)
-    for (const stroke of projected.strokes) paintStroke(ctx, stroke)
+    for (const item of projected.items) {
+      if (item.kind === 'stroke') paintStroke(ctx, item.stroke)
+      else paintSectionFill(ctx, item.fill)
+    }
     this.present(null)
     this.emitHistory()
   }
@@ -1327,6 +1647,7 @@ export class PaintSurface {
     this.timeline.push('paint')
     this.timelineFuture = []
     this.sections.abandonRedo()
+    this.ridges.abandonRedo()
     while (hist.actions.length > MAX_HISTORY) this.bakeOldest(hist)
   }
 
@@ -1347,7 +1668,8 @@ export class PaintSurface {
       hist.baseHasPixels = false
       return
     }
-    paintStroke(ctx, action.stroke)
+    if (action.kind === 'fill') paintSectionFill(ctx, action.fill)
+    else paintStroke(ctx, action.stroke)
     hist.baseHasPixels = true
   }
 
@@ -1365,12 +1687,20 @@ export class PaintSurface {
     }
   }
 
-  private imagePixelsPerScreenPixel(): number {
-    const rect = this.display.getBoundingClientRect()
-    if (rect.width < 1 || this.display.width < 1) {
-      return 1 / Math.max(0.0001, this.zoom * this.contentScale)
-    }
-    return this.display.width / rect.width
+  /** Mask, ridge, and paint dabs read the live size. Hug being off does not freeze it. */
+  private applyLiveBrushSize(): void {
+    const session = this.session
+    if (!session) return
+    const size = this.strokeWidth()
+    if (session.mode === 'section-brush') session.size = size
+    else if (session.mode === 'ridge') session.stroke.size = size
+    else if (session.mode === 'draw') session.stroke.size = size
+    else if (session.mode === 'mask') session.stroke.size = size
+  }
+
+  /** Size is photo pixels. View zoom and photo scale only magnify the screen. */
+  private strokeWidth(): number {
+    return Math.max(this.brushSize, 0.5)
   }
 
   private toImage(clientX: number, clientY: number): Point | null {
@@ -1385,7 +1715,7 @@ export class PaintSurface {
     }
     const pixels = this.readSample()
     this.edgeMask = pixels
-      ? selectionEdges(pixels.data, this.sample.width, this.sample.height, this.tolerance)
+      ? selectionEdges(pixels.data, this.sample.width, this.sample.height, this.tolerance, this.ridgeEdits())
       : null
     this.refreshOverlay(null, null)
   }
@@ -1403,6 +1733,17 @@ export class PaintSurface {
       data[offset + 1] = 214
       data[offset + 2] = 64
       data[offset + 3] = 230
+    }
+    const added = this.ridges.hasEdits ? this.ridges.maps.add : null
+    if (added && added.length === edges.length) {
+      for (let i = 0; i < added.length; i += 1) {
+        if (added[i] === 0) continue
+        const offset = i * 4
+        data[offset] = 255
+        data[offset + 1] = 214
+        data[offset + 2] = 64
+        data[offset + 3] = 230
+      }
     }
     ctx.putImageData(image, 0, 0)
   }

@@ -20,6 +20,8 @@ export type StageHandle = {
   setSectionLocked: (id: string, locked: boolean) => void
   deleteSection: (id: string) => void
   proposeSections: () => number
+  clearRidges: () => void
+  fillSection: () => void
 }
 
 type CanvasStageProps = {
@@ -31,6 +33,8 @@ type CanvasStageProps = {
   spaceHeld: boolean
   tolerance: number
   showEdges: boolean
+  edgeSnap: boolean
+  snapStrength: number
   maskMode: MaskMode
   sectionChip: { name: string; color: string } | null
   onPickColor: (hex: string, commit: boolean) => void
@@ -40,6 +44,7 @@ type CanvasStageProps = {
   onSections: (sections: SectionInfo[], activeId: string | null) => void
   onError: (message: string) => void
   onBrowse: () => void
+  onRidges: (active: boolean) => void
 }
 
 export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function CanvasStage(
@@ -52,6 +57,8 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     spaceHeld,
     tolerance,
     showEdges,
+    edgeSnap,
+    snapStrength,
     maskMode,
     sectionChip,
     onPickColor,
@@ -61,6 +68,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     onSections,
     onError,
     onBrowse,
+    onRidges,
   },
   ref,
 ) {
@@ -79,12 +87,14 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
   const onPhotoRef = useRef(onPhoto)
   const onSectionsRef = useRef(onSections)
   const onErrorRef = useRef(onError)
+  const onRidgesRef = useRef(onRidges)
   onPickRef.current = onPickColor
   onStrokeRef.current = onStroke
   onHistoryRef.current = onHistory
   onPhotoRef.current = onPhoto
   onSectionsRef.current = onSections
   onErrorRef.current = onError
+  onRidgesRef.current = onRidges
 
   const configRef = useRef({
     tool,
@@ -94,9 +104,22 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     space: spaceHeld,
     tolerance,
     showEdges,
+    edgeSnap,
+    snapStrength,
     maskMode,
   })
-  configRef.current = { tool, color, brushSize, opacity, space: spaceHeld, tolerance, showEdges, maskMode }
+  configRef.current = {
+    tool,
+    color,
+    brushSize,
+    opacity,
+    space: spaceHeld,
+    tolerance,
+    showEdges,
+    edgeSnap,
+    snapStrength,
+    maskMode,
+  }
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current
@@ -112,6 +135,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       pick: (hex, commit) => onPickRef.current(hex, commit),
       stroke: (hex) => onStrokeRef.current(hex),
       sections: (sections, activeId) => onSectionsRef.current(sections, activeId),
+      ridges: (active) => onRidgesRef.current(active),
       error: (message) => onErrorRef.current(message),
     })
     surfaceRef.current = surface
@@ -148,6 +172,8 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     setSectionLocked: (id: string, locked: boolean) => surfaceRef.current?.setSectionLocked(id, locked),
     deleteSection: (id: string) => surfaceRef.current?.deleteSection(id),
     proposeSections: () => surfaceRef.current?.proposeSections() ?? 0,
+    clearRidges: () => surfaceRef.current?.clearRidges(),
+    fillSection: () => surfaceRef.current?.fillSection(),
   }))
 
   const zoomLabel = `${Math.round(view.z * 100)}%`
@@ -160,7 +186,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       data-space={spaceHeld ? 'true' : 'false'}
       role="application"
       aria-label="Miniature photo. Paint tints the picture and keeps its light and shadow."
-      style={{ '--brush': `${brushSize}px` } as CSSProperties}
+      style={{ '--brush': `${brushSize * view.contentScale * view.z}px` } as CSSProperties}
     >
       <div
         className="stage"
@@ -195,7 +221,10 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       <div
         ref={ringRef}
         className={
-          tool === 'eraser' || tool === 'eraseBackdrop' || (tool === 'maskBrush' && maskMode === 'subtract')
+          tool === 'eraser' ||
+          tool === 'eraseBackdrop' ||
+          tool === 'edgeErase' ||
+          (tool === 'maskBrush' && maskMode === 'subtract')
             ? 'cursor-ring is-eraser'
             : 'cursor-ring'
         }

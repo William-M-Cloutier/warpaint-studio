@@ -6,10 +6,12 @@
  * thresholds and the wand walks across it. A sculpt seam is a sharp jump and
  * stays a thin edge. Growth never crosses those edges, and it is hard-gated
  * to the miniature (cutout alpha, and any border-connected backdrop that is
- * still opaque). Suggest and the edge overlay use the same Canny walls.
+ * still opaque). Suggest, the edge overlay, and edge snap use the same walls.
+ * Hand edits force a ridge on or off after Canny, and every consumer sees that.
  */
 
 import cvModule from '@techstark/opencv-js'
+import type { RidgeEdits } from './edgeEdits'
 
 const ALPHA_CUT = 16
 const WORK_SIDE = 1600
@@ -95,9 +97,10 @@ export function selectRegion(
   seedX: number,
   seedY: number,
   tolerance: number,
+  edits?: RidgeEdits | null,
 ): RegionMask | null {
   const map = buildEdgeMap(rgba, width, height)
-  return selectOnMap(map, rgba, seedX, seedY, tolerance)
+  return selectOnMap(map, rgba, seedX, seedY, tolerance, edits)
 }
 
 export function suggestRegions(
@@ -105,11 +108,12 @@ export function suggestRegions(
   width: number,
   height: number,
   tolerance: number,
+  edits?: RidgeEdits | null,
 ): Uint8Array[] {
   if (width < 8 || height < 8) return []
   const map = buildEdgeMap(rgba, width, height)
   if (map.subjectCount < 32) return []
-  return suggestOnMap(map, rgba, tolerance).map((entry) => entry.mask)
+  return suggestOnMap(map, rgba, tolerance, edits).map((entry) => entry.mask)
 }
 
 export function buildEdgeMap(rgba: Uint8ClampedArray, width: number, height: number): EdgeMap {
@@ -158,15 +162,63 @@ export function buildEdgeMap(rgba: Uint8ClampedArray, width: number, height: num
 }
 
 /** Full-resolution Canny walls at this tolerance. Same edges the wand starts from. */
+export type EdgeGuide = {
+  fullWidth: number
+  fullHeight: number
+  width: number
+  height: number
+  scale: number
+  /** 1 on a ridge the wand would stop on, including hand edits. */
+  wall: Uint8Array
+  /** 1 on the miniature. */
+  subject: Uint8Array
+}
+
+/** Coarse Canny walls at this tolerance, after hand-added and hand-erased ridges. */
+export function edgeGuide(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  tolerance: number,
+  edits?: RidgeEdits | null,
+): EdgeGuide {
+  if (width < 2 || height < 2) {
+    const count = Math.max(0, width * height)
+    return {
+      fullWidth: width,
+      fullHeight: height,
+      width: Math.max(0, width),
+      height: Math.max(0, height),
+      scale: 1,
+      wall: new Uint8Array(count),
+      subject: new Uint8Array(count),
+    }
+  }
+  const map = buildEdgeMap(rgba, width, height)
+  const wall = wallsFor(map, tolerance, edits)
+  return {
+    fullWidth: width,
+    fullHeight: height,
+    width: map.width,
+    height: map.height,
+    scale: map.scale,
+    wall,
+    subject: map.subject,
+  }
+}
+
 export function selectionEdges(
   rgba: Uint8ClampedArray,
   width: number,
   height: number,
   tolerance: number,
+  edits?: RidgeEdits | null,
 ): Uint8Array {
   if (width < 2 || height < 2) return new Uint8Array(Math.max(0, width * height))
   const map = buildEdgeMap(rgba, width, height)
-  const walls = wallsFor(map, tolerance)
+  // Yellow overlay is automatic Canny after erases. A painted ridge is not run
+  // through Canny again — the stroke pixels themselves are the wall.
+  const walls = wallsFor(map, tolerance, edits, false)
   const full = new Uint8Array(width * height)
   const { scale } = map
   for (let y = 0; y < height; y += 1) {
@@ -179,6 +231,40 @@ export function selectionEdges(
     }
   }
   return full
+}
+
+/**
+ * True when darker plastic lies on opposite sides within a short reach.
+ * A specular ridge passes. The white field and the one-sided fringe do not.
+ */
+function enclosedByPlastic(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  index: number,
+  luma: number,
+): boolean {
+  const x = index % width
+  const y = (index - x) / width
+  const reach = 6
+  const darker = (nx: number, ny: number): boolean => {
+    if (nx < 0 || ny < 0 || nx >= width || ny >= height) return false
+    const o = (ny * width + nx) * 4
+    if (rgba[o + 3] < ALPHA_CUT) return false
+    const next = 0.2126 * rgba[o] + 0.7152 * rgba[o + 1] + 0.0722 * rgba[o + 2]
+    return luma - next >= 42
+  }
+  let left = false
+  let right = false
+  let up = false
+  let down = false
+  for (let step = 1; step <= reach; step += 1) {
+    if (!left && darker(x - step, y)) left = true
+    if (!right && darker(x + step, y)) right = true
+    if (!up && darker(x, y - step)) up = true
+    if (!down && darker(x, y + step)) down = true
+  }
+  return (left && right) || (up && down)
 }
 
 /**
@@ -243,6 +329,10 @@ function backdropGate(rgba: Uint8ClampedArray, width: number, height: number): U
       }
     }
     if (!near) return false
+    // A highlight or raised edge sits between darker plastic. The white field
+    // does not: it is bright on every side. Keep the enclosed pixels on the
+    // miniature so a section can cover them and the wand can add them.
+    if (enclosedByPlastic(rgba, width, height, index, luma)) return false
     // Near-white fringe is backdrop even where it touches the miniature.
     // A milder bright pixel glued to darker plastic is a highlight, not the field.
     if (luma >= 236) return true
@@ -300,9 +390,12 @@ function selectOnMap(
   seedX: number,
   seedY: number,
   tolerance: number,
+  edits?: RidgeEdits | null,
 ): RegionMask | null {
   let sx = Math.floor(seedX)
   let sy = Math.floor(seedY)
+  const clickX = sx
+  const clickY = sy
   if (sx < 0 || sy < 0 || sx >= map.fullWidth || sy >= map.fullHeight) return null
   if (map.off[sy * map.fullWidth + sx] !== 0) {
     // Cleared pixels stay empty. Opaque backdrop only snaps when the click is on the fringe.
@@ -314,6 +407,7 @@ function selectOnMap(
   }
 
   const blurred = blurSubject(map)
+  const force = coarsenRidges(map, edits)
   try {
     let { low, high } = cannyPair(tolerance)
     const smallPhoto = map.subjectCount < 8000
@@ -322,7 +416,7 @@ function selectOnMap(
     let tooBig: RegionMask | null = null
     let tooSmall: RegionMask | null = null
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      const walls = cannyWalls(blurred, map, low, high)
+      const walls = cannyWalls(blurred, map, low, high, force)
       const seed = placeSeed(map, walls, sx, sy)
       if (seed < 0) {
         low = Math.min(200, low * 1.4)
@@ -337,13 +431,23 @@ function selectOnMap(
       }
       const kept = splitBridges(grown.mask, seed, map.width, map.height)
       fillEnclosed(kept, map.subject, map.width, map.height, Math.max(12, Math.floor(grown.count * 0.85)))
+      // The open flood stops on the ridge, which leaves a dead rim inside the
+      // plate. Those wall pixels belong to this part.
+      claimRim(kept, walls, map.width, map.height, 3)
       const full = upsample(kept, map, rgba)
-      if (!coversClick(full, map, sx, sy)) {
+      const before = full.count
+      // A click on the seam must select the seam, not only the plate beside it.
+      claimClickGap(full, map, rgba, clickX, clickY)
+      const clickIndex = clickY * map.fullWidth + clickX
+      const covered =
+        coversClick(full, map, sx, sy) ||
+        (clickIndex >= 0 && clickIndex < full.mask.length && full.mask[clickIndex] !== 0)
+      if (!covered) {
         low = Math.min(200, low * 1.35)
         high = Math.min(240, high * 1.35)
         continue
       }
-      if (full.count >= minCount && full.count <= maxCount) {
+      if (before >= minCount && before <= maxCount) {
         if (tooBig && full.count * 6 < tooBig.count) break
         if (tooSmall && full.count > tooSmall.count * 80 && full.count > map.subjectCount * 0.3) break
         return full
@@ -417,8 +521,111 @@ function coversClick(region: RegionMask, map: EdgeMap, sx: number, sy: number): 
   return true
 }
 
-function suggestOnMap(map: EdgeMap, rgba: Uint8ClampedArray, tolerance: number): RegionMask[] {
-  const walls = wallsFor(map, tolerance)
+/** Pull the dilated ridge back onto the plate. Depth stays short so a seam cannot reach the next part. */
+function claimRim(mask: Uint8Array, walls: Uint8Array, width: number, height: number, depth: number): void {
+  const seen = new Uint8Array(mask.length)
+  const steps = new Int16Array(mask.length)
+  const queue = new Int32Array(mask.length)
+  let head = 0
+  let tail = 0
+  for (let i = 0; i < mask.length; i += 1) {
+    if (mask[i] === 0) continue
+    seen[i] = 1
+    queue[tail] = i
+    tail += 1
+  }
+  while (head < tail) {
+    const index = queue[head]
+    head += 1
+    if (steps[index] >= depth) continue
+    const x = index % width
+    const y = (index - x) / width
+    const nextStep = steps[index] + 1
+    const visit = (nx: number, ny: number) => {
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) return
+      const next = ny * width + nx
+      if (seen[next] !== 0 || walls[next] === 0) return
+      seen[next] = 1
+      steps[next] = nextStep
+      mask[next] = 1
+      queue[tail] = next
+      tail += 1
+    }
+    if (x > 0) visit(x - 1, y)
+    if (x + 1 < width) visit(x + 1, y)
+    if (y > 0) visit(x, y - 1)
+    if (y + 1 < height) visit(x, y + 1)
+  }
+}
+
+/**
+ * A click on a ridge used to resolve to the neighboring plate. The plate was
+ * already in the section, so Add reported "already in the section" and left
+ * the ridge out. Take the connected ridge pixels around the click instead.
+ */
+function claimClickGap(
+  region: RegionMask,
+  map: EdgeMap,
+  rgba: Uint8ClampedArray,
+  clickX: number,
+  clickY: number,
+): void {
+  const width = map.fullWidth
+  const height = map.fullHeight
+  if (clickX < 0 || clickY < 0 || clickX >= width || clickY >= height) return
+  const origin = clickY * width + clickX
+  if (rgba[origin * 4 + 3] < ALPHA_CUT || region.mask[origin] !== 0) return
+  const radius = 96
+  const isGap = (index: number, x: number, y: number): boolean => {
+    if (region.mask[index] !== 0) return false
+    if (rgba[index * 4 + 3] < ALPHA_CUT) return false
+    if (Math.max(Math.abs(x - clickX), Math.abs(y - clickY)) > radius) return false
+    const cx = Math.min(map.width - 1, Math.floor(x / map.scale))
+    const cy = Math.min(map.height - 1, Math.floor(y / map.scale))
+    if (map.edge[cy * map.width + cx] !== 0) return true
+    if (map.off[index] === 0) return false
+    const luma = 0.2126 * rgba[index * 4] + 0.7152 * rgba[index * 4 + 1] + 0.0722 * rgba[index * 4 + 2]
+    return enclosedByPlastic(rgba, width, height, index, luma)
+  }
+  if (!isGap(origin, clickX, clickY)) return
+  const seen = new Uint8Array(width * height)
+  const queue = new Int32Array(width * height)
+  let head = 0
+  let tail = 0
+  seen[origin] = 1
+  queue[tail] = origin
+  tail += 1
+  while (head < tail) {
+    const index = queue[head]
+    head += 1
+    if (region.mask[index] === 0) {
+      region.mask[index] = 255
+      region.count += 1
+    }
+    const x = index % width
+    const y = (index - x) / width
+    const step = (nx: number, ny: number) => {
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) return
+      const next = ny * width + nx
+      if (seen[next] !== 0 || !isGap(next, nx, ny)) return
+      seen[next] = 1
+      queue[tail] = next
+      tail += 1
+    }
+    step(x - 1, y)
+    step(x + 1, y)
+    step(x, y - 1)
+    step(x, y + 1)
+  }
+}
+
+function suggestOnMap(
+  map: EdgeMap,
+  rgba: Uint8ClampedArray,
+  tolerance: number,
+  edits?: RidgeEdits | null,
+): RegionMask[] {
+  const walls = wallsFor(map, tolerance, edits)
   const labels = labelOpen(map, walls)
   mergeFragments(labels, map)
   const masks = masksFromLabels(labels, map)
@@ -446,14 +653,82 @@ function cannyPair(tolerance: number): { low: number; high: number } {
   return { low, high }
 }
 
-function wallsFor(map: EdgeMap, tolerance: number): Uint8Array {
+function wallsFor(
+  map: EdgeMap,
+  tolerance: number,
+  edits?: RidgeEdits | null,
+  includeAdds = true,
+): Uint8Array {
   const blurred = blurSubject(map)
   try {
     const { low, high } = cannyPair(tolerance)
-    return cannyWalls(blurred, map, low, high)
+    let force = coarsenRidges(map, edits)
+    if (force && !includeAdds) {
+      const erased = new Uint8Array(force.length)
+      for (let i = 0; i < force.length; i += 1) if (force[i] === 2) erased[i] = 2
+      force = erased
+    }
+    return cannyWalls(blurred, map, low, high, force)
   } finally {
     blurred.delete()
   }
+}
+
+/**
+ * Coarse force map. 1 = user ridge, 2 = user suppression, 0 = leave Canny alone.
+ * Add wins inside a cell that contains both.
+ */
+function coarsenRidges(map: EdgeMap, edits?: RidgeEdits | null): Uint8Array | null {
+  if (!edits) return null
+  const count = map.fullWidth * map.fullHeight
+  if (edits.add.length !== count || edits.erase.length !== count) return null
+  let touched = false
+  for (let i = 0; i < count; i += 1) {
+    if (edits.add[i] !== 0 || edits.erase[i] !== 0) {
+      touched = true
+      break
+    }
+  }
+  if (!touched) return null
+  const force = new Uint8Array(map.width * map.height)
+  const { scale, width, height, fullWidth, fullHeight } = map
+  for (let y = 0; y < fullHeight; y += 1) {
+    const cy = Math.min(height - 1, Math.floor(y / scale))
+    const row = y * fullWidth
+    const coarseRow = cy * width
+    for (let x = 0; x < fullWidth; x += 1) {
+      const pixel = row + x
+      const index = coarseRow + Math.min(width - 1, Math.floor(x / scale))
+      if (edits.add[pixel] !== 0) force[index] = 1
+      else if (force[index] === 0 && edits.erase[pixel] !== 0) force[index] = 2
+    }
+  }
+  return dilateForce(force, width, height)
+}
+
+/**
+ * An erased ridge covers the cell beside it, so Canny's own dilation cannot
+ * revive a one-pixel seam. An added ridge is left on the cells the stroke
+ * actually covers — widening it would outline the paint instead of using it.
+ */
+function dilateForce(force: Uint8Array, width: number, height: number): Uint8Array {
+  const next = force.slice()
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (force[y * width + x] !== 2) continue
+      for (let dy = -1; dy <= 1; dy += 1) {
+        const ny = y + dy
+        if (ny < 0 || ny >= height) continue
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const nx = x + dx
+          if (nx < 0 || nx >= width) continue
+          const index = ny * width + nx
+          if (next[index] !== 1) next[index] = 2
+        }
+      }
+    }
+  }
+  return next
 }
 
 /**
@@ -511,7 +786,13 @@ function blurSubject(map: EdgeMap): CvMat {
   return blurred
 }
 
-function cannyWalls(blurred: CvMat, map: EdgeMap, low: number, high: number): Uint8Array {
+function cannyWalls(
+  blurred: CvMat,
+  map: EdgeMap,
+  low: number,
+  high: number,
+  force?: Uint8Array | null,
+): Uint8Array {
   const edges = new cv.Mat()
   const dx = new cv.Mat()
   const dy = new cv.Mat()
@@ -538,6 +819,13 @@ function cannyWalls(blurred: CvMat, map: EdgeMap, low: number, high: number): Ui
       const on = map.subject[i] !== 0 && src[i] !== 0 && !rimEcho(dx, dy, rim, i, high)
       walls[i] = on ? 1 : 0
       map.edge[i] = on ? 255 : 0
+    }
+    if (force && force.length === walls.length) {
+      for (let i = 0; i < walls.length; i += 1) {
+        if (force[i] === 2) walls[i] = 0
+        else if (force[i] === 1 && map.subject[i] !== 0) walls[i] = 1
+        map.edge[i] = walls[i] ? 255 : 0
+      }
     }
     return walls
   } finally {

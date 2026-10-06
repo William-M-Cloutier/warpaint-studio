@@ -1,4 +1,5 @@
 import type { SectionCategory } from '../types'
+import type { RidgeEdits } from './edgeEdits'
 import { selectRegion, suggestRegions } from './edgeSelect'
 
 /**
@@ -80,8 +81,9 @@ export function floodMask(
   seedX: number,
   seedY: number,
   tolerance: number,
+  edits?: RidgeEdits | null,
 ): { mask: Uint8Array; count: number } | null {
-  return selectRegion(rgba, width, height, seedX, seedY, tolerance)
+  return selectRegion(rgba, width, height, seedX, seedY, tolerance, edits)
 }
 
 /**
@@ -92,8 +94,9 @@ export function proposeSectionMasks(
   rgba: Uint8ClampedArray,
   width: number,
   height: number,
+  edits?: RidgeEdits | null,
 ): Uint8Array[] {
-  return suggestRegions(rgba, width, height, DEFAULT_EDGE_TOLERANCE)
+  return suggestRegions(rgba, width, height, DEFAULT_EDGE_TOLERANCE, edits)
 }
 
 /** Even-odd fill of a freehand loop. Pixel centers decide what is inside. */

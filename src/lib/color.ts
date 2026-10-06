@@ -24,6 +24,23 @@ export function displayHex(hex: string): string {
   return hex.toUpperCase()
 }
 
+/**
+ * Lighter mix of the current colour for raised edges.
+ * The photo still shades this pigment. It is not a second lighting model.
+ */
+const HIGHLIGHT_LIFT = 0.42
+
+export function highlightColor(hex: string): string {
+  const normalized = normalizeHex(hex)
+  if (!normalized) return hex
+  const lift = (channel: number) => Math.round(channel + (255 - channel) * HIGHLIGHT_LIFT)
+  return rgbToHex(
+    lift(parseInt(normalized.slice(1, 3), 16)),
+    lift(parseInt(normalized.slice(3, 5), 16)),
+    lift(parseInt(normalized.slice(5, 7), 16)),
+  )
+}
+
 export function createId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
   return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`

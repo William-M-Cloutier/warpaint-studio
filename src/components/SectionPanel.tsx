@@ -1,5 +1,6 @@
 import { SECTION_PRESETS, presetLabel } from '../lib/sections'
 import type { MaskMode, SectionCategory, SectionInfo, Tool } from '../types'
+import { EdgeSnapControls } from './EdgeSnapControls'
 import { IconEye, IconEyeOff, IconLock, IconTrash, IconUnlock } from './Icons'
 
 type SectionPanelProps = {
@@ -22,6 +23,15 @@ type SectionPanelProps = {
   onLocked: (id: string, locked: boolean) => void
   onDelete: (id: string) => void
   onPropose: () => void
+  hasRidges: boolean
+  onRidgeTool: (tool: 'edgeAdd' | 'edgeErase') => void
+  onClearRidges: () => void
+  edgeSnap: boolean
+  snapStrength: number
+  onEdgeSnap: (enabled: boolean) => void
+  onSnapStrength: (strength: number) => void
+  brushSize: number
+  onBrushSize: (size: number) => void
 }
 
 const SECTION_TOOLS: { id: Tool; label: string; shortcut: string }[] = [
@@ -56,6 +66,15 @@ export function SectionPanel({
   onLocked,
   onDelete,
   onPropose,
+  hasRidges,
+  onRidgeTool,
+  onClearRidges,
+  edgeSnap,
+  snapStrength,
+  onEdgeSnap,
+  onSnapStrength,
+  brushSize,
+  onBrushSize,
 }: SectionPanelProps) {
   const active = sections.find((section) => section.id === activeId) ?? null
   const activeName = active ? active.name.trim() || 'Untitled section' : null
@@ -85,37 +104,60 @@ export function SectionPanel({
           </button>
         ))}
       </div>
-      <div className="segmented" role="radiogroup" aria-label="How the mask tool writes">
-        {MASK_MODES.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            className="btn"
-            role="radio"
-            aria-checked={maskMode === entry.id}
-            disabled={!hasImage}
-            onClick={() => onMaskMode(entry.id)}
-          >
-            {entry.label}
-          </button>
-        ))}
-      </div>
-      {tool === 'wand' && (
-        <label className="tool-slider section-tolerance">
-          <span>Edge tolerance</span>
+      {(tool === 'maskBrush' || tool === 'edgeAdd' || tool === 'edgeErase') && (
+        <label className="tool-slider">
+          <span>Size</span>
           <input
             type="range"
-            min={0}
-            max={120}
+            min={1}
+            max={160}
             step={1}
-            value={tolerance}
-            aria-label="Wand tolerance"
-            disabled={!hasImage}
-            onChange={(event) => onTolerance(Number(event.target.value))}
+            value={brushSize}
+            aria-label="Brush size"
+            onChange={(event) => onBrushSize(Number(event.target.value))}
           />
-          <span className="slider-value">{tolerance}</span>
+          <span className="slider-value">{Math.round(brushSize)} px</span>
         </label>
       )}
+      {(tool === 'lasso' || tool === 'maskBrush') && (
+        <EdgeSnapControls
+          edgeSnap={edgeSnap}
+          snapStrength={snapStrength}
+          onEdgeSnap={onEdgeSnap}
+          onSnapStrength={onSnapStrength}
+        />
+      )}
+      {tool !== 'edgeAdd' && tool !== 'edgeErase' && (
+        <div className="segmented" role="radiogroup" aria-label="How the mask tool writes">
+          {MASK_MODES.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              className="btn"
+              role="radio"
+              aria-checked={maskMode === entry.id}
+              disabled={!hasImage}
+              onClick={() => onMaskMode(entry.id)}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <label className="tool-slider section-tolerance">
+        <span>Edge tolerance</span>
+        <input
+          type="range"
+          min={0}
+          max={150}
+          step={1}
+          value={tolerance}
+          aria-label="Edge tolerance"
+          disabled={!hasImage}
+          onChange={(event) => onTolerance(Number(event.target.value))}
+        />
+        <span className="slider-value">{tolerance}</span>
+      </label>
       <label className="edge-toggle">
         <input
           type="checkbox"
@@ -125,10 +167,36 @@ export function SectionPanel({
         />
         <span>Show edges</span>
       </label>
+      <div className="segmented" role="group" aria-label="Edit the edge map">
+        <button
+          type="button"
+          className="btn"
+          aria-pressed={tool === 'edgeAdd'}
+          title="Paint a missing ridge. Uses Size."
+          disabled={!hasImage}
+          onClick={() => onRidgeTool('edgeAdd')}
+        >
+          Add ridge
+        </button>
+        <button
+          type="button"
+          className="btn"
+          aria-pressed={tool === 'edgeErase'}
+          title="Rub out a false ridge. Uses Size."
+          disabled={!hasImage}
+          onClick={() => onRidgeTool('edgeErase')}
+        >
+          Erase ridge
+        </button>
+      </div>
+      <button type="button" className="btn btn-block" onClick={onClearRidges} disabled={!hasImage || !hasRidges}>
+        Clear ridge edits
+      </button>
       <p className="tool-note">
         Edge-aware wand. It grows across a plate and stops at a Canny ridge, so a shade ramp stays one region.
-        Show edges draws those ridges on the photo. New starts a section. Add and Subtract edit the active one.
-        Suggest uses the same edges.
+        Show edges draws automatic ridges and ridges you add in yellow. Add ridge paints the wall itself.
+        Erase ridge knocks a false one out. The wand, Suggest, and Stay inside
+        lines follow that edited map. Both undo. Edge tolerance stays here for the wand and those ridge tools.
       </p>
       <button
         type="button"
