@@ -89,6 +89,7 @@ Photos stay in memory for the session. A new photo replaces the current one. If 
 - `src/lib/backdrop.ts` — viewing-background presets
 - `src/lib/tint.ts` — luminance shading of the paint coat, and the photo-to-paint look
 - `src/roadmap.ts` — features that are listed and **not** built yet
+- `fixtures/stormcast-acceptance.jpg` — grey unpainted Stormcast (axe, shield, halo helm on white), 1600×1200. Acceptance photo for wand, auto highlight, suggestions, look, and viewing background. Upload it; the app does not load it on its own.
 
 Theme colors are CSS variables on `:root` (dark) and `:root[data-theme="light"]`.
 
