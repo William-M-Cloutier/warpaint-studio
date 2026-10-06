@@ -12,6 +12,21 @@ const PIVOT_LUMINANCE = 0.5
  */
 const HIGHLIGHT_LIFT = 0.55
 
+/**
+ * The Look control is still 0–100. The coat only uses the low end of the
+ * old full-strength range: slider 100 matches the old strength of about 15.
+ */
+export const PAINT_LOOK_EFFECT_MAX = 15
+
+/** Slider position, as 0–1 of the 0–100 control, for a realistic coat (effective 9). */
+export const PAINT_LOOK_DEFAULT = 9 / PAINT_LOOK_EFFECT_MAX
+
+/** Blend amount for `shadePigment` / `compositeSurface` from the 0–1 slider position. */
+export function paintLookBlend(slider: number): number {
+  const ui = Math.min(1, Math.max(0, slider))
+  return (ui * PAINT_LOOK_EFFECT_MAX) / 100
+}
+
 function luminance(r: number, g: number, b: number): number {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
 }

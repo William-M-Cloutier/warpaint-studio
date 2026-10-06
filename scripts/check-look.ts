@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { backdropCssColor, BACKDROP_PRESETS } from '../src/lib/backdrop.ts'
-import { compositeSurface } from '../src/lib/tint.ts'
+import { defaultPrefs } from '../src/lib/storage.ts'
+import { PAINT_LOOK_DEFAULT, compositeSurface, paintLookBlend } from '../src/lib/tint.ts'
 
 const PIVOT = 0.5
 const LIFT = 0.55
@@ -78,6 +79,18 @@ const painted = coat([20, 18, 16], 1)
 const photoSide = coat([20, 18, 16], 0)
 assert.ok(painted[0] > photoSide[0] + 20, 'more paint keeps the red in a shadow')
 assert.ok(painted[0] - painted[1] > photoSide[0] - photoSide[1] + 15, 'more paint keeps more chroma')
+
+assert.equal(paintLookBlend(0), 0)
+assert.equal(paintLookBlend(1), 0.15)
+assert.equal(PAINT_LOOK_DEFAULT, 0.6)
+assert.equal(paintLookBlend(PAINT_LOOK_DEFAULT), 0.09)
+assert.equal(defaultPrefs().paintLook, PAINT_LOOK_DEFAULT)
+const sliderTop = coat([20, 18, 16], paintLookBlend(1))
+const sliderDefault = coat([20, 18, 16], paintLookBlend(PAINT_LOOK_DEFAULT))
+assert.ok(sliderTop[0] > photoSide[0], 'slider 100 still lifts the red')
+assert.ok(sliderTop[0] < painted[0] - 15, 'slider 100 stays under the old full mix')
+assert.ok(sliderDefault[0] > photoSide[0], 'the default coat is past more-photo')
+assert.ok(sliderDefault[0] < sliderTop[0], 'the default sits under the top of the slider')
 
 const again = coat([20, 18, 16], 1)
 assert.deepEqual(Array.from(painted), Array.from(again), 'grain stays put on the same pixel')

@@ -226,7 +226,7 @@ export function ToolStrip({
         <span>More paint</span>
       </p>
       <p className="tool-note">
-        More photo keeps the picture’s light. More paint strengthens the colour, softens that light, and adds a little texture. The coat underneath does not change.
+        More photo keeps the picture’s light. More paint strengthens the colour a little and softens that light. The far end is a light coat. The coat underneath does not change.
       </p>
       {showEdgeSnap && (
         <EdgeSnapControls

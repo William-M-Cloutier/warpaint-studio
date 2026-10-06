@@ -74,7 +74,7 @@ export type StudioPrefs = {
   recent: string[]
   brushSize: number
   opacity: number
-  /** 0 is the original photo-locked tint. 1 is the more-paint look. */
+  /** 0–1 of the 0–100 Look slider. 0 is the original tint. 1 is a light coat (old strength ~15). Opens at 0.6. */
   paintLook: number
   backdrop: BackdropChoice
   backdropColor: string

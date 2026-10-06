@@ -1,4 +1,5 @@
 import { DEFAULT_COLOR, STARTER_COLORS, normalizeHex } from './color'
+import { PAINT_LOOK_DEFAULT } from './tint'
 import type { BackdropChoice, ColorScheme, SchemeColor, StudioPrefs, ThemeName } from '../types'
 
 export const THEME_KEY = 'warpaint-studio:theme'
@@ -84,7 +85,7 @@ export function defaultPrefs(): StudioPrefs {
     recent: [...STARTER_COLORS],
     brushSize: 28,
     opacity: 1,
-    paintLook: 0,
+    paintLook: PAINT_LOOK_DEFAULT,
     backdrop: 'checker',
     backdropColor: '#3a3a3a',
   }

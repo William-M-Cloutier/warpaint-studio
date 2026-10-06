@@ -15,7 +15,7 @@ import {
 } from './edgeSnap'
 import { clampPhotoScale, fitPhotoScale } from './photoScale'
 import { MAX_SECTION_HISTORY, SectionLayer } from './sectionLayer'
-import { compositeSurface, sampleTintHex } from './tint'
+import { PAINT_LOOK_DEFAULT, compositeSurface, paintLookBlend, sampleTintHex } from './tint'
 import {
   MAX_HISTORY,
   clampBounds,
@@ -254,7 +254,7 @@ export class PaintSurface {
   private showEdges = false
   private edgeSnap = false
   private snapStrength = DEFAULT_SNAP_STRENGTH
-  private paintLook = 0
+  private paintLook = PAINT_LOOK_DEFAULT
   private edgeMask: Uint8Array | null = null
   private maskMode: MaskMode = 'new'
   private readonly sections = new SectionLayer()
@@ -1700,7 +1700,7 @@ export class PaintSurface {
     try {
       const tint = tintCtx.getImageData(region.x, region.y, region.w, region.h)
       const photo = photoCtx.getImageData(region.x, region.y, region.w, region.h)
-      compositeSurface(tint.data, photo.data, tint.data, this.paintLook, region.x, region.y, region.w)
+      compositeSurface(tint.data, photo.data, tint.data, paintLookBlend(this.paintLook), region.x, region.y, region.w)
       display.putImageData(tint, region.x, region.y)
     } catch {
       this.presentFailed = true
