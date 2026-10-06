@@ -30,6 +30,9 @@ type SectionPanelProps = {
   snapStrength: number
   onEdgeSnap: (enabled: boolean) => void
   onSnapStrength: (strength: number) => void
+  brushSize: number
+  onBrushSize: (size: number) => void
+  onFill: () => void
 }
 
 const SECTION_TOOLS: { id: Tool; label: string; shortcut: string }[] = [
@@ -71,6 +74,9 @@ export function SectionPanel({
   snapStrength,
   onEdgeSnap,
   onSnapStrength,
+  brushSize,
+  onBrushSize,
+  onFill,
 }: SectionPanelProps) {
   const active = sections.find((section) => section.id === activeId) ?? null
   const activeName = active ? active.name.trim() || 'Untitled section' : null
@@ -100,6 +106,21 @@ export function SectionPanel({
           </button>
         ))}
       </div>
+      {(tool === 'maskBrush' || tool === 'edgeAdd' || tool === 'edgeErase') && (
+        <label className="tool-slider">
+          <span>Size</span>
+          <input
+            type="range"
+            min={1}
+            max={160}
+            step={1}
+            value={brushSize}
+            aria-label="Brush size"
+            onChange={(event) => onBrushSize(Number(event.target.value))}
+          />
+          <span className="slider-value">{Math.round(brushSize)} px</span>
+        </label>
+      )}
       {(tool === 'lasso' || tool === 'maskBrush') && (
         <EdgeSnapControls
           edgeSnap={edgeSnap}
@@ -128,7 +149,7 @@ export function SectionPanel({
         <input
           type="range"
           min={0}
-          max={120}
+          max={150}
           step={1}
           value={tolerance}
           aria-label="Edge tolerance"
@@ -185,6 +206,15 @@ export function SectionPanel({
         aria-busy={proposeBusy}
       >
         {proposeBusy ? 'Working…' : 'Suggest regions'}
+      </button>
+      <button
+        type="button"
+        className="btn btn-block"
+        onClick={onFill}
+        disabled={!hasImage || !active || active.locked}
+        title={active?.locked ? 'Unlock the section to fill it' : 'Fill the active section with the current color'}
+      >
+        Fill section
       </button>
       <div className="section-scroll">
       <button

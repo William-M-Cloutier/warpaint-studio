@@ -21,6 +21,7 @@ export type StageHandle = {
   deleteSection: (id: string) => void
   proposeSections: () => number
   clearRidges: () => void
+  fillSection: () => void
 }
 
 type CanvasStageProps = {
@@ -172,6 +173,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     deleteSection: (id: string) => surfaceRef.current?.deleteSection(id),
     proposeSections: () => surfaceRef.current?.proposeSections() ?? 0,
     clearRidges: () => surfaceRef.current?.clearRidges(),
+    fillSection: () => surfaceRef.current?.fillSection(),
   }))
 
   const zoomLabel = `${Math.round(view.z * 100)}%`

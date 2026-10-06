@@ -17,6 +17,7 @@ import {
   MAX_HISTORY,
   clampBounds,
   historyHasPaint,
+  paintSectionFill,
   paintStroke,
   projectActions,
   strokeBounds,
@@ -288,6 +289,7 @@ export class PaintSurface {
     this.color = config.color
     this.brushSize = config.brushSize
     this.opacity = config.opacity
+    this.applyLiveBrushSize()
     this.space = config.space
     const edgesDirty =
       config.showEdges !== this.showEdges || (config.showEdges && config.tolerance !== this.tolerance)
@@ -646,6 +648,38 @@ export class PaintSurface {
   deleteSection(id: string): void {
     if (!this.sections.remove(id)) return
     this.noteSectionEdit()
+  }
+
+  /** Coat the active section with the current pigment. The photo still supplies light and shadow. */
+  fillSection(): void {
+    if (!this.image || !this.tintCtx || !this.hist || this.disposed) return
+    const clipTarget = this.sections.clipForPaint(this.cutoutActive ? this.cutoutAlpha : null)
+    if (clipTarget.blocked) {
+      this.emit.error(clipTarget.blocked)
+      return
+    }
+    const clip = clipTarget.clip
+    if (!clip) {
+      this.emit.error('Select a section to fill.')
+      return
+    }
+    let covered = false
+    for (let i = 0; i < clip.mask.length; i += 1) {
+      if (clip.mask[i] > 0) {
+        covered = true
+        break
+      }
+    }
+    if (!covered) {
+      this.emit.error('That section is empty.')
+      return
+    }
+    const fill = { color: this.color, opacity: this.opacity, clip }
+    paintSectionFill(this.tintCtx, fill)
+    this.present(null)
+    this.push({ kind: 'fill', fill })
+    this.emit.stroke(this.color)
+    this.emitHistory()
   }
 
   clearRidges(): void {
@@ -1579,7 +1613,10 @@ export class PaintSurface {
     ctx.clearRect(0, 0, this.tint.width, this.tint.height)
     const projected = projectActions(hist.actions)
     if (projected.includeBase && hist.base) ctx.drawImage(hist.base, 0, 0)
-    for (const stroke of projected.strokes) paintStroke(ctx, stroke)
+    for (const item of projected.items) {
+      if (item.kind === 'stroke') paintStroke(ctx, item.stroke)
+      else paintSectionFill(ctx, item.fill)
+    }
     this.present(null)
     this.emitHistory()
   }
@@ -1613,7 +1650,8 @@ export class PaintSurface {
       hist.baseHasPixels = false
       return
     }
-    paintStroke(ctx, action.stroke)
+    if (action.kind === 'fill') paintSectionFill(ctx, action.fill)
+    else paintStroke(ctx, action.stroke)
     hist.baseHasPixels = true
   }
 
@@ -1629,6 +1667,17 @@ export class PaintSurface {
       this.emit.error('Could not sample that pixel.')
       return null
     }
+  }
+
+  /** Mask, ridge, and paint dabs read the live size. Hug being off does not freeze it. */
+  private applyLiveBrushSize(): void {
+    const session = this.session
+    if (!session) return
+    const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
+    if (session.mode === 'section-brush') session.size = size
+    else if (session.mode === 'ridge') session.stroke.size = size
+    else if (session.mode === 'draw') session.stroke.size = size
+    else if (session.mode === 'mask') session.stroke.size = size
   }
 
   private imagePixelsPerScreenPixel(): number {

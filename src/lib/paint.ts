@@ -30,7 +30,19 @@ export type Stroke = {
   clip?: StrokeClip
 }
 
-export type HistoryAction = { kind: 'stroke'; stroke: Stroke } | { kind: 'clear' }
+/** One coat of the current pigment inside a section mask. Shading happens at present time. */
+export type SectionFill = {
+  color: string
+  opacity: number
+  clip: StrokeClip
+}
+
+export type HistoryAction =
+  | { kind: 'stroke'; stroke: Stroke }
+  | { kind: 'fill'; fill: SectionFill }
+  | { kind: 'clear' }
+
+export type ReplayItem = { kind: 'stroke'; stroke: Stroke } | { kind: 'fill'; fill: SectionFill }
 
 export type Bounds = {
   x: number
@@ -43,24 +55,32 @@ export const MAX_HISTORY = 200
 
 export function projectActions(actions: readonly HistoryAction[]): {
   includeBase: boolean
-  strokes: Stroke[]
+  items: ReplayItem[]
 } {
   let includeBase = true
-  const strokes: Stroke[] = []
+  const items: ReplayItem[] = []
   for (const action of actions) {
     if (action.kind === 'clear') {
       includeBase = false
-      strokes.length = 0
-    } else {
-      strokes.push(action.stroke)
-    }
+      items.length = 0
+    } else if (action.kind === 'stroke') items.push({ kind: 'stroke', stroke: action.stroke })
+    else items.push({ kind: 'fill', fill: action.fill })
   }
-  return { includeBase, strokes }
+  return { includeBase, items }
 }
 
 export function historyHasPaint(actions: readonly HistoryAction[], baseHasPixels: boolean): boolean {
   const projected = projectActions(actions)
-  return projected.strokes.length > 0 || (projected.includeBase && baseHasPixels)
+  return projected.items.length > 0 || (projected.includeBase && baseHasPixels)
+}
+
+/** Coat strength for one pixel. Zero outside the section mask, and outside the cutout. */
+export function sectionFillAlpha(mask: number, cutout: number | null, opacity: number): number {
+  if (!(opacity > 0) || mask <= 0) return 0
+  let factor = (mask / 255) * opacity
+  if (cutout !== null) factor *= cutout / 255
+  if (!(factor > 0)) return 0
+  return Math.min(255, Math.round(255 * factor))
 }
 
 export function strokeBounds(stroke: Stroke): Bounds | null {
@@ -186,6 +206,32 @@ function paintClippedStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void
   ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over'
   ctx.imageSmoothingEnabled = false
   ctx.drawImage(stamp.canvas, 0, 0, region.w, region.h, region.x, region.y, region.w, region.h)
+  ctx.restore()
+}
+
+/** Write the pigment into the tint layer inside the section. Photo luminance shades it on present. */
+export function paintSectionFill(ctx: CanvasRenderingContext2D, fill: SectionFill): void {
+  const { clip, color, opacity } = fill
+  if (clip.width < 1 || clip.height < 1 || !(opacity > 0)) return
+  const stamp = stampContext(clip.width, clip.height)
+  if (!stamp) return
+  stamp.setTransform(1, 0, 0, 1, 0, 0)
+  stamp.globalAlpha = 1
+  stamp.globalCompositeOperation = 'source-over'
+  stamp.clearRect(0, 0, clip.width, clip.height)
+  stamp.fillStyle = color
+  stamp.fillRect(0, 0, clip.width, clip.height)
+  const image = stamp.getImageData(0, 0, clip.width, clip.height)
+  const data = image.data
+  const cutout = clip.cutout && clip.cutout.length === clip.mask.length ? clip.cutout : null
+  for (let i = 0; i < clip.mask.length; i += 1) {
+    data[i * 4 + 3] = sectionFillAlpha(clip.mask[i], cutout ? cutout[i] : null, opacity)
+  }
+  stamp.putImageData(image, 0, 0)
+  ctx.save()
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.imageSmoothingEnabled = false
+  ctx.drawImage(stamp.canvas, 0, 0, clip.width, clip.height, 0, 0, clip.width, clip.height)
   ctx.restore()
 }
 

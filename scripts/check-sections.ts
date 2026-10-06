@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { canvasToBitmap } from '../src/lib/canvasPoint.ts'
 import { selectionEdges } from '../src/lib/edgeSelect.ts'
 import { SectionLayer } from '../src/lib/sectionLayer.ts'
+import { projectActions, sectionFillAlpha } from '../src/lib/paint.ts'
 import {
   blitCoverage,
   combineClipAlpha,
@@ -319,5 +320,22 @@ let edgePixels = 0
 for (let i = 0; i < edges.length; i += 1) if (edges[i] !== 0) edgePixels += 1
 assert.ok(edgePixels > 20, 'edge overlay has no Canny ridges')
 assert.equal(edges[2 * stageW + 2], 0, 'edge overlay paints the white field')
+
+assert.equal(sectionFillAlpha(255, null, 1), 255)
+assert.equal(sectionFillAlpha(0, null, 1), 0, 'fill stays inside the section mask')
+assert.equal(sectionFillAlpha(255, 0, 1), 0, 'fill stays off a cleared cutout')
+assert.equal(sectionFillAlpha(128, null, 1), 128)
+assert.equal(sectionFillAlpha(255, null, 0.5), 128)
+const fillMask = new Uint8Array([0, 255, 255])
+const fillClip = { mask: fillMask, cutout: null, width: 3, height: 1 }
+const projected = projectActions([
+  { kind: 'fill', fill: { color: '#336699', opacity: 1, clip: fillClip } },
+  { kind: 'clear' },
+  { kind: 'fill', fill: { color: '#112233', opacity: 0.5, clip: fillClip } },
+])
+assert.equal(projected.includeBase, false)
+assert.equal(projected.items.length, 1)
+assert.equal(projected.items[0].kind, 'fill')
+if (projected.items[0].kind === 'fill') assert.equal(projected.items[0].fill.color, '#112233')
 
 console.log('section checks passed')

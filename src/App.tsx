@@ -558,6 +558,9 @@ export function App() {
           snapStrength={snapStrength}
           onEdgeSnap={setEdgeSnap}
           onSnapStrength={setSnapStrength}
+          brushSize={brushSize}
+          onBrushSize={setBrushSize}
+          onFill={() => stageRef.current?.fillSection()}
         />
         </div>
         <div

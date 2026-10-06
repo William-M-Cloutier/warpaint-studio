@@ -591,6 +591,8 @@ textarea { user-select: text; }
   border-left: 0;
 }
 
+.side-stack .sections-panel { overflow: auto; }
+
 .side-stack .panel { overflow: auto; }
 
 .side-stack .catalog-panel {
@@ -608,8 +610,8 @@ textarea { user-select: text; }
 }
 
 .section-scroll {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 1 0 240px;
+  min-height: 240px;
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -1270,7 +1272,12 @@ button.section-card:hover:not(:disabled),
   .sections-panel {
     max-height: none;
     min-height: 0;
-    overflow: hidden;
+    overflow: auto;
+  }
+
+  .section-scroll {
+    flex-basis: 180px;
+    min-height: 180px;
   }
 
   .panel {
