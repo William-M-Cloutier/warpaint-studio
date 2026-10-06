@@ -48,8 +48,18 @@ const EMPTY_HISTORY: HistoryState = { canUndo: false, canRedo: false, hasPaint: 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   if (target.isContentEditable) return true
-  const tag = target.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+  if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return true
+  if (!(target instanceof HTMLInputElement)) return false
+  const type = target.type
+  return (
+    type === 'text' ||
+    type === 'search' ||
+    type === 'email' ||
+    type === 'url' ||
+    type === 'password' ||
+    type === 'number' ||
+    type === 'tel'
+  )
 }
 
 function isFileDrag(event: DragEvent): boolean {
@@ -272,6 +282,18 @@ export function App() {
         return
       }
       if (mod || event.altKey) return
+      const bracket =
+        event.code === 'BracketLeft' || event.key === '[' || event.key === '{'
+          ? -1
+          : event.code === 'BracketRight' || event.key === ']' || event.key === '}'
+            ? 1
+            : 0
+      if (bracket !== 0) {
+        event.preventDefault()
+        const step = event.shiftKey ? 10 : 2
+        setBrushSize((size) => clampSize(size + bracket * step))
+        return
+      }
       if (event.code === 'Digit0') {
         event.preventDefault()
         if (event.shiftKey) stageRef.current?.autoScale()
@@ -296,8 +318,6 @@ export function App() {
         setSideTab('sections')
       }
       else if (key === 's') setEdgeSnap((enabled) => !enabled)
-      else if (event.key === '[') setBrushSize((size) => clampSize(size - (event.shiftKey ? 10 : 2)))
-      else if (event.key === ']') setBrushSize((size) => clampSize(size + (event.shiftKey ? 10 : 2)))
     }
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.code === 'Space') releaseSpace()

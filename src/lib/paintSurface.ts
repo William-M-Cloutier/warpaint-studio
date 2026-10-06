@@ -300,11 +300,15 @@ export class PaintSurface {
   }
 
   configure(config: SurfaceConfig): void {
+    const sizeChanged = config.brushSize !== this.brushSize
     this.tool = config.tool
     this.color = config.color
     this.brushSize = config.brushSize
     this.opacity = config.opacity
-    this.applyLiveBrushSize()
+    // Resize an in-progress stroke only when the size control changes.
+    // Every render calls configure, and a live canvas measurement was
+    // rewriting the dab whenever layout disagreed for a frame.
+    if (sizeChanged) this.applyLiveBrushSize()
     this.space = config.space
     const edgesDirty =
       config.showEdges !== this.showEdges || (config.showEdges && config.tolerance !== this.tolerance)
@@ -411,6 +415,7 @@ export class PaintSurface {
     if (Math.abs(zoom - 1) < 0.015) zoom = 1
     this.zoom = zoom
     this.center(displayW, displayH)
+    this.applyLiveBrushSize()
     this.emitView()
     this.emitPhoto()
   }
@@ -436,6 +441,7 @@ export class PaintSurface {
     if (!Number.isFinite(zoom)) return
     this.zoom = zoom
     this.center(displayW, displayH)
+    this.applyLiveBrushSize()
     this.emitView()
   }
 
@@ -456,6 +462,7 @@ export class PaintSurface {
       x: cx - localX * ratio * this.zoom,
       y: cy - localY * ratio * this.zoom,
     }
+    this.applyLiveBrushSize()
     this.emitView()
     this.emitPhoto()
   }
@@ -823,6 +830,7 @@ export class PaintSurface {
     const imageY = (mouseY - this.pan.y) / this.zoom
     this.zoom = next
     this.pan = { x: mouseX - imageX * next, y: mouseY - imageY * next }
+    this.applyLiveBrushSize()
     this.queueView()
   }
 
@@ -889,7 +897,7 @@ export class PaintSurface {
     }
     const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
     const hug = this.strokeSnap(size, clipTarget.clip?.mask ?? null)
-    const start = this.biasSnapped(hug, point, point)
+    const start = event.shiftKey ? point : this.biasSnapped(hug, point, point)
     const stroke: Stroke = {
       tool: this.tool === 'eraser' ? 'eraser' : 'brush',
       color: this.tool === 'highlight' ? highlightColor(this.color) : this.color,
@@ -1269,7 +1277,7 @@ export class PaintSurface {
     if (this.tool === 'lasso') {
       const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
       const hug = this.strokeSnap(size, this.sectionSnapMask())
-      const start = this.biasSnapped(hug, point, point)
+      const start = event.shiftKey ? point : this.biasSnapped(hug, point, point)
       this.session = {
         mode: 'lasso',
         pointerId: event.pointerId,
@@ -1290,7 +1298,7 @@ export class PaintSurface {
     }
     const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
     const hug = this.strokeSnap(size, this.sectionSnapMask())
-    const start = this.biasSnapped(hug, point, point)
+    const start = event.shiftKey ? point : this.biasSnapped(hug, point, point)
     this.session = {
       mode: 'section-brush',
       pointerId: event.pointerId,
@@ -1694,12 +1702,13 @@ export class PaintSurface {
     else if (session.mode === 'mask') session.stroke.size = size
   }
 
+  /**
+   * Photo pixels per screen pixel. The stage is contentScale, then view zoom.
+   * The canvas rect can disagree for a frame (transform not applied yet, or a
+   * zero box), and feeding that into an in-progress stroke made the dab jump.
+   */
   private imagePixelsPerScreenPixel(): number {
-    const rect = this.display.getBoundingClientRect()
-    if (rect.width < 1 || this.display.width < 1) {
-      return 1 / Math.max(0.0001, this.zoom * this.contentScale)
-    }
-    return this.display.width / rect.width
+    return 1 / Math.max(0.0001, this.zoom * this.contentScale)
   }
 
   private toImage(clientX: number, clientY: number): Point | null {
