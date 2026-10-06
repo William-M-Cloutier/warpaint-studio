@@ -70,6 +70,8 @@ type SurfaceEvents = {
   error: (message: string) => void
   sections: (sections: SectionInfo[], activeId: string | null) => void
   ridges: (active: boolean) => void
+  /** Return true to keep this wheel gesture from changing the photo zoom. */
+  zoomGesture?: (direction: 'in' | 'out') => boolean
 }
 
 type Hist = {
@@ -234,6 +236,8 @@ export class PaintSurface {
   private ring: HTMLElement | null = null
   private pan = { x: 0, y: 0 }
   private zoom = 1
+  /** Zoom that frames the photo in the current cell. Wheel-out at this level can return to the grid. */
+  private framedZoom = 1
   private contentScale = 1
   private cutoutActive = false
   private readonly maskBase = document.createElement('canvas')
@@ -424,6 +428,7 @@ export class PaintSurface {
     if (!Number.isFinite(zoom)) zoom = 1
     if (Math.abs(zoom - 1) < 0.015) zoom = 1
     this.zoom = zoom
+    this.framedZoom = zoom
     this.center(displayW, displayH)
     this.emitView()
     this.emitPhoto()
@@ -449,8 +454,14 @@ export class PaintSurface {
     const zoom = this.frameZoom(displayW, displayH)
     if (!Number.isFinite(zoom)) return
     this.zoom = zoom
+    this.framedZoom = zoom
     this.center(displayW, displayH)
     this.emitView()
+  }
+
+  /** True when view zoom is still the framed fit, so zooming out can return to the grid. */
+  atFrame(): boolean {
+    return this.zoom <= this.framedZoom * 1.04
   }
 
   /** Resize the picture. View zoom stays, anchored at the center of the canvas. */
@@ -910,6 +921,7 @@ export class PaintSurface {
     let delta = event.deltaY
     if (event.deltaMode === 1) delta *= 16
     if (event.deltaMode === 2) delta *= this.viewport.clientHeight
+    if (delta !== 0 && this.emit.zoomGesture?.(delta < 0 ? 'in' : 'out')) return
     const next = clamp(this.zoom * Math.exp(-delta * 0.0015), MIN_ZOOM, MAX_ZOOM)
     const imageX = (mouseX - this.pan.x) / this.zoom
     const imageY = (mouseY - this.pan.y) / this.zoom

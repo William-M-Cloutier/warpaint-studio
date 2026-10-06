@@ -20,8 +20,8 @@ Node 20 or newer.
 
 ## What you can do
 
-- Drop a photo on the window, or use **Upload**. It loads into the active view. That view starts as **Front Photo**, so one photo still paints the way it did before.
-- Four views sit above the canvas in a 2×2 grid: **Front Photo**, **Back Photo**, **Side L Photo**, and **Side R Photo**. Click a slot to paint that photo. Each slot has its own **Upload**. An empty slot shows a placeholder. Each view keeps its own photo, paint, sections, cutout, and ridge edits, so painting Front leaves Side L alone. Replacing a photo asks first only when that view has paint or sections.
+- Drop a photo on the window, or use **Upload**. It loads into the focused view. That view starts as **Front**, so one photo still paints the way it did before.
+- The canvas is a 2×2 of **Front**, **Back**, **Side L**, and **Side R**. Click a view to focus it. Scroll to zoom in, or press **Zoom**, and that view fills the work area. **All views**, or a zoom-out once the photo is framed, returns to the grid. Painting and pan apply to the focused view. Each cell has **Upload** when it is empty and **Replace** when it has a photo. Each view keeps its own paint, sections, cutout, and ridge edits, so painting Front leaves Side L alone. Replacing a photo asks first only when that view has paint or sections.
 - The left paint tools are two rows of three: **Brush**, **Eraser**, **Eyedropper**, then **Pan**, **Highlight**, and **Fill**.
 - **Brush** lays down a tint, not a flat cover. The coat is shaded by the photo, so edges, highlights, and recesses stay visible. The same red is brighter on a lit surface and darker in a shadow. **Opacity** is how strong that tint is. The photo pixels are not edited.
 - **Look** sits under Opacity. The control is 0–100 and opens at 60. **More photo** (0) is the original tint. Toward **More paint** the colour gets a little stronger, the photo’s light softens, and a little texture appears. 100 is a light coat, the old strength of about 15, not a flat cover. It only changes the preview. Strokes, the eyedropper, and undo still use the pigment. The choice is remembered in this browser.

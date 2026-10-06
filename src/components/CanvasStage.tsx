@@ -33,6 +33,7 @@ export type StageHandle = {
   fillSection: () => void
   autoHighlight: (pigment: HighlightPigment) => 'ok' | 'empty' | 'blocked' | 'none'
   sampleActivePigment: () => string | null
+  atFrame: () => boolean
 }
 
 type CanvasStageProps = {
@@ -60,8 +61,8 @@ type CanvasStageProps = {
   onPhoto: (photo: PhotoState) => void
   onSections: (sections: SectionInfo[], activeId: string | null) => void
   onError: (message: string) => void
-  onBrowse: () => void
   onRidges: (active: boolean) => void
+  onZoomGesture?: (direction: 'in' | 'out') => boolean
 }
 
 export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function CanvasStage(
@@ -90,8 +91,8 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     onPhoto,
     onSections,
     onError,
-    onBrowse,
     onRidges,
+    onZoomGesture,
   },
   ref,
 ) {
@@ -111,6 +112,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
   const onSectionsRef = useRef(onSections)
   const onErrorRef = useRef(onError)
   const onRidgesRef = useRef(onRidges)
+  const onZoomGestureRef = useRef(onZoomGesture)
   onPickRef.current = onPickColor
   onStrokeRef.current = onStroke
   onHistoryRef.current = onHistory
@@ -118,6 +120,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
   onSectionsRef.current = onSections
   onErrorRef.current = onError
   onRidgesRef.current = onRidges
+  onZoomGestureRef.current = onZoomGesture
 
   const configRef = useRef({
     tool,
@@ -164,6 +167,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       sections: (sections, activeId) => onSectionsRef.current(sections, activeId),
       ridges: (active) => onRidgesRef.current(active),
       error: (message) => onErrorRef.current(message),
+      zoomGesture: (direction) => onZoomGestureRef.current?.(direction) ?? false,
     })
     surfaceRef.current = surface
     surface.configure(configRef.current)
@@ -203,6 +207,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     fillSection: () => surfaceRef.current?.fillSection(),
     autoHighlight: (pigment: HighlightPigment) => surfaceRef.current?.autoHighlight(pigment) ?? 'none',
     sampleActivePigment: () => surfaceRef.current?.sampleActivePigment() ?? null,
+    atFrame: () => surfaceRef.current?.atFrame() ?? true,
   }))
 
   const zoomLabel = `${Math.round(view.z * 100)}%`
@@ -254,10 +259,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
         <div className="empty">
           <MiniSilhouette />
           <h2>{slotLabel}</h2>
-          <p>This view is empty. Upload a photo to paint it. Other views keep their own paint.</p>
-          <button type="button" className="btn btn-primary" onClick={onBrowse}>
-            Upload photo
-          </button>
+          <p>This view is empty.</p>
         </div>
       )}
 

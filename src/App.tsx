@@ -6,7 +6,6 @@ import { Dialog } from './components/Dialog'
 import { SectionPanel } from './components/SectionPanel'
 import { TopBar } from './components/TopBar'
 import { ToolStrip } from './components/ToolStrip'
-import { ViewSlots } from './components/ViewSlots'
 import { useSchemes } from './hooks/useSchemes'
 import { useTheme } from './hooks/useTheme'
 import { backdropCssColor } from './lib/backdrop'
@@ -89,6 +88,7 @@ export function App() {
   const [palette, setPalette] = useState<SchemeColor[]>([])
   const [views, setViews] = useState(createViews)
   const [activeView, setActiveView] = useState<ViewSlotId>('front')
+  const [expanded, setExpanded] = useState(false)
   const [paintSerial, setPaintSerial] = useState(0)
   const [spaceHeld, setSpaceHeld] = useState(false)
   const [dragging, setDragging] = useState(false)
@@ -124,6 +124,8 @@ export function App() {
   const nameRef = useRef<HTMLInputElement>(null)
   const viewsRef = useRef(views)
   const activeViewRef = useRef(activeView)
+  const expandedRef = useRef(expanded)
+  const expandStamp = useRef(0)
   const loadTargetRef = useRef<ViewSlotId>('front')
   const dialogRef = useRef(dialog)
   const cutoutTimer = useRef(0)
@@ -131,6 +133,7 @@ export function App() {
   const stageBinders = useRef<Record<ViewSlotId, (handle: StageHandle | null) => void> | null>(null)
   viewsRef.current = views
   activeViewRef.current = activeView
+  expandedRef.current = expanded
   dialogRef.current = dialog
   backdropImageRef.current = backdropImage
   if (!stageBinders.current) {
@@ -207,6 +210,41 @@ export function App() {
     },
     [selectView],
   )
+
+  const expandView = useCallback(() => {
+    if (!viewsRef.current[activeViewRef.current].image) return
+    expandStamp.current = performance.now()
+    setExpanded(true)
+  }, [])
+
+  const collapseView = useCallback(() => setExpanded(false), [])
+
+  const onZoomGesture = useCallback((direction: 'in' | 'out') => {
+    if (!viewsRef.current[activeViewRef.current].image) return false
+    const now = performance.now()
+    if (!expandedRef.current && direction === 'in') {
+      expandStamp.current = now
+      setExpanded(true)
+      return true
+    }
+    if (expandedRef.current && now - expandStamp.current < 320) return true
+    if (expandedRef.current && direction === 'out' && (stageRef.current?.atFrame() ?? false)) {
+      setExpanded(false)
+      return true
+    }
+    return false
+  }, [])
+
+  useEffect(() => {
+    let inner = 0
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => stageRef.current?.fit())
+    })
+    return () => {
+      cancelAnimationFrame(outer)
+      if (inner) cancelAnimationFrame(inner)
+    }
+  }, [expanded])
 
   const remember = useCallback((hex: string) => {
     const next = normalizeHex(hex)
@@ -623,17 +661,15 @@ export function App() {
           onClearBackdropImage={clearBackdropImage}
         />
         <div className="stage-column">
-          <ViewSlots active={activeView} views={views} onSelect={selectView} onUpload={openPicker} />
-          <div className="view-stack">
+          <div className={expanded ? 'view-grid is-expanded' : 'view-grid'}>
             {VIEW_SLOTS.map((slot) => {
               const record = views[slot.id]
               const active = slot.id === activeView
               return (
                 <div
                   key={slot.id}
-                  className={active ? 'view-host is-active' : 'view-host'}
-                  inert={!active ? true : undefined}
-                  aria-hidden={active ? undefined : true}
+                  className={active ? 'view-cell is-active' : 'view-cell'}
+                  data-view-slot={slot.id}
                 >
                   <CanvasStage
                     ref={stageBinders.current?.[slot.id]}
@@ -669,9 +705,40 @@ export function App() {
                       updateView(slot.id, (view) => withSections(view, list, sectionId))
                     }
                     onError={flash}
-                    onBrowse={() => openPicker(slot.id)}
                     onRidges={(ridges) => updateView(slot.id, (view) => withRidges(view, ridges))}
+                    onZoomGesture={active ? onZoomGesture : undefined}
                   />
+                  <div className="view-cell-bar">
+                    <span className="view-cell-name">{slot.label}</span>
+                    <span className="view-cell-actions">
+                      {active && record.image &&
+                        (expanded ? (
+                          <button type="button" className="btn" onClick={collapseView}>
+                            All views
+                          </button>
+                        ) : (
+                          <button type="button" className="btn" onClick={expandView}>
+                            Zoom
+                          </button>
+                        ))}
+                      <button
+                        type="button"
+                        className={record.image ? 'btn' : 'btn btn-primary'}
+                        aria-label={record.image ? `Replace ${slot.label}` : `Upload ${slot.label}`}
+                        onClick={() => openPicker(slot.id)}
+                      >
+                        {record.image ? 'Replace' : 'Upload'}
+                      </button>
+                    </span>
+                  </div>
+                  {!active && (
+                    <button
+                      type="button"
+                      className="view-cell-focus"
+                      aria-label={`Focus ${slot.label}`}
+                      onClick={() => selectView(slot.id)}
+                    />
+                  )}
                 </div>
               )
             })}

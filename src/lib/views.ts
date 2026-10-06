@@ -2,10 +2,10 @@ import type { HistoryState, LoadedPhoto, PhotoState, SectionInfo } from '../type
 
 /** The four photos of one miniature. Front is the view a single upload uses. */
 export const VIEW_SLOTS = [
-  { id: 'front', label: 'Front Photo' },
-  { id: 'back', label: 'Back Photo' },
-  { id: 'side-l', label: 'Side L Photo' },
-  { id: 'side-r', label: 'Side R Photo' },
+  { id: 'front', label: 'Front' },
+  { id: 'back', label: 'Back' },
+  { id: 'side-l', label: 'Side L' },
+  { id: 'side-r', label: 'Side R' },
 ] as const
 
 export type ViewSlotId = (typeof VIEW_SLOTS)[number]['id']
