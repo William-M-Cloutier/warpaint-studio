@@ -10,16 +10,6 @@ export type RoadmapItem = {
 
 export const ROADMAP: readonly RoadmapItem[] = [
   {
-    id: 'view-backgrounds',
-    title: 'Custom viewing backgrounds',
-    note: 'After a cutout exists, place the miniature on a chosen viewing background.',
-  },
-  {
-    id: 'paint-suggestions',
-    title: 'Suggested paints and highlights',
-    note: 'Offer highlight and shade suggestions from a chosen base color.',
-  },
-  {
     id: 'lighting',
     title: 'Lighting presets',
     note: 'Preview the same scheme under a few lighting setups.',

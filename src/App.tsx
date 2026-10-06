@@ -8,13 +8,16 @@ import { TopBar } from './components/TopBar'
 import { ToolStrip } from './components/ToolStrip'
 import { useSchemes } from './hooks/useSchemes'
 import { useTheme } from './hooks/useTheme'
-import { paintById } from './lib/catalog'
-import { createId, normalizeHex, rememberColor } from './lib/color'
+import { backdropCssColor } from './lib/backdrop'
+import { paintById, type PaintRangeId } from './lib/catalog'
+import { createId, highlightColor, normalizeHex, rememberColor } from './lib/color'
 import { DEFAULT_SNAP_STRENGTH } from './lib/edgeSnap'
 import { decodeImage, isImageFile, photoTooLarge } from './lib/imageFile'
 import { loadPrefs, savePrefs } from './lib/storage'
 import type {
+  BackdropChoice,
   ColorScheme,
+  HighlightPigment,
   HistoryState,
   LoadedPhoto,
   MaskMode,
@@ -78,6 +81,7 @@ export function App() {
   const [palette, setPalette] = useState<SchemeColor[]>([])
   const [image, setImage] = useState<LoadedPhoto | null>(null)
   const [history, setHistory] = useState<HistoryState>(EMPTY_HISTORY)
+  const [paintSerial, setPaintSerial] = useState(0)
   const [spaceHeld, setSpaceHeld] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [dialog, setDialog] = useState<DialogState>(null)
@@ -99,6 +103,15 @@ export function App() {
   const [pickedId, setPickedId] = useState<string | null>(null)
   const [proposeBusy, setProposeBusy] = useState(false)
   const [sideTab, setSideTab] = useState<SideTab>('color')
+  const [paintLook, setPaintLook] = useState(initialPrefs.current.paintLook)
+  const [highlightPigment, setHighlightPigment] = useState<HighlightPigment>('lighter')
+  const [highlightBusy, setHighlightBusy] = useState(false)
+  const [suggestionSource, setSuggestionSource] = useState<'current' | 'section'>('current')
+  const [sectionPigment, setSectionPigment] = useState<string | null>(null)
+  const [backdrop, setBackdrop] = useState<BackdropChoice>(initialPrefs.current.backdrop)
+  const [backdropColor, setBackdropColor] = useState(initialPrefs.current.backdropColor)
+  const [backdropImage, setBackdropImage] = useState<string | null>(null)
+  const [backdropImageName, setBackdropImageName] = useState<string | null>(null)
 
   const stageRef = useRef<StageHandle>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -106,16 +119,18 @@ export function App() {
   const imageRef = useRef(image)
   const dialogRef = useRef(dialog)
   const cutoutTimer = useRef(0)
+  const backdropImageRef = useRef<string | null>(null)
   imageRef.current = image
   dialogRef.current = dialog
+  backdropImageRef.current = backdropImage
 
   const flash = useCallback((text: string) => {
     setNotice({ id: Date.now(), text })
   }, [])
 
   useEffect(() => {
-    savePrefs({ color, recent, brushSize, opacity })
-  }, [color, recent, brushSize, opacity])
+    savePrefs({ color, recent, brushSize, opacity, paintLook, backdrop, backdropColor })
+  }, [color, recent, brushSize, opacity, paintLook, backdrop, backdropColor])
 
   useEffect(() => {
     if (!notice) return
@@ -126,9 +141,14 @@ export function App() {
   useEffect(() => {
     return () => {
       if (imageRef.current) URL.revokeObjectURL(imageRef.current.url)
+      if (backdropImageRef.current) URL.revokeObjectURL(backdropImageRef.current)
       window.clearTimeout(cutoutTimer.current)
     }
   }, [])
+
+  useEffect(() => {
+    setSectionPigment(stageRef.current?.sampleActivePigment() ?? null)
+  }, [paintSerial, activeSectionId, image])
 
   const onPhoto = useCallback((photo: PhotoState) => {
     setContentScale((current) => (current === photo.contentScale ? current : photo.contentScale))
@@ -141,6 +161,7 @@ export function App() {
   }, [])
 
   const onHistory = useCallback((next: HistoryState) => {
+    setPaintSerial((current) => current + 1)
     setHistory((current) =>
       current.canUndo === next.canUndo &&
       current.canRedo === next.canRedo &&
@@ -416,6 +437,51 @@ export function App() {
     stageRef.current?.labelSection(id, category, customLabel)
   }
 
+  const usingSectionPaint = suggestionSource === 'section' && sectionPigment !== null
+  const suggestionHex = usingSectionPaint && sectionPigment ? sectionPigment : color
+  const pickedPaint = pickedId ? paintById(pickedId) : null
+  const preferRange: PaintRangeId | null =
+    pickedPaint && pickedPaint.hex === suggestionHex ? pickedPaint.range : null
+  const highlightSwatch = highlightPigment === 'lighter' ? highlightColor(color) : color
+
+  const pickCatalogPaint = (paint: { id: string; hex: string }) => {
+    setColor(paint.hex)
+    setPickedId(paint.id)
+    remember(paint.hex)
+  }
+
+  const runAutoHighlight = () => {
+    if (!image || highlightBusy) return
+    setHighlightBusy(true)
+    window.setTimeout(() => {
+      const result = stageRef.current?.autoHighlight(highlightPigment) ?? 'none'
+      setHighlightBusy(false)
+      if (result === 'empty') flash('No raised edges stood out there.')
+      else if (result === 'ok') flash('Highlighted the raised edges.')
+    }, 30)
+  }
+
+  const clearBackdropImage = () => {
+    setBackdropImage((current) => {
+      if (current) URL.revokeObjectURL(current)
+      return null
+    })
+    setBackdropImageName(null)
+  }
+
+  const loadBackdropImage = (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      flash('Choose a PNG, JPEG, WebP, or GIF for the background.')
+      return
+    }
+    const url = URL.createObjectURL(file)
+    setBackdropImage((current) => {
+      if (current) URL.revokeObjectURL(current)
+      return url
+    })
+    setBackdropImageName(file.name)
+  }
+
   return (
     <div className="app">
       <TopBar
@@ -481,6 +547,29 @@ export function App() {
             ((tool === 'lasso' || tool === 'maskBrush') && sideTab !== 'sections')
           }
           onFill={() => stageRef.current?.fillSection()}
+          highlightPigment={highlightPigment}
+          highlightSwatch={highlightSwatch}
+          highlightBusy={highlightBusy}
+          onHighlightPigment={setHighlightPigment}
+          onAutoHighlight={runAutoHighlight}
+          paintLook={paintLook}
+          onPaintLook={setPaintLook}
+          backdrop={backdrop}
+          backdropColor={backdropColor}
+          backdropImageName={backdropImageName}
+          onBackdrop={(choice) => {
+            setBackdrop(choice)
+            clearBackdropImage()
+          }}
+          onBackdropColor={(hex) => {
+            const next = normalizeHex(hex)
+            if (!next) return
+            setBackdrop('custom')
+            setBackdropColor(next)
+            clearBackdropImage()
+          }}
+          onBackdropFile={loadBackdropImage}
+          onClearBackdropImage={clearBackdropImage}
         />
         <CanvasStage
           ref={stageRef}
@@ -495,6 +584,9 @@ export function App() {
           edgeSnap={edgeSnap}
           snapStrength={snapStrength}
           maskMode={maskMode}
+          paintLook={paintLook}
+          viewBackdrop={cutoutActive ? backdropCssColor(backdrop, backdropColor) : null}
+          backdropImage={cutoutActive ? backdropImage : null}
           sectionChip={sectionChip}
           onPickColor={(hex, commit) => {
             setBrushColor(hex)
@@ -616,7 +708,13 @@ export function App() {
           onSave={openSave}
           onLoad={loadScheme}
           onAskDelete={(scheme) => setDialog({ type: 'delete', scheme })}
-          pickedPaint={pickedId ? paintById(pickedId) : null}
+          pickedPaint={pickedPaint}
+          suggestionHex={suggestionHex}
+          suggestionSource={suggestionSource}
+          sectionPaintAvailable={sectionPigment !== null}
+          preferRange={preferRange}
+          onSuggestionSource={setSuggestionSource}
+          onPickPaint={pickCatalogPaint}
         />
         </div>
         <div
@@ -629,11 +727,12 @@ export function App() {
           <aside className="panel catalog-panel" aria-label="Paint catalog">
             <CatalogBrowser
               pickedId={pickedId}
-              onPick={(paint) => {
-                setColor(paint.hex)
-                setPickedId(paint.id)
-                remember(paint.hex)
-              }}
+              onPick={pickCatalogPaint}
+              suggestionHex={suggestionHex}
+              suggestionSource={suggestionSource}
+              sectionPaintAvailable={sectionPigment !== null}
+              preferRange={preferRange}
+              onSuggestionSource={setSuggestionSource}
             />
           </aside>
         </div>

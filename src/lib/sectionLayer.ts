@@ -303,6 +303,12 @@ export class SectionLayer {
    * Clip target for a paint stroke. The returned mask array must not be
    * mutated; later edits replace it instead of writing into it.
    */
+  /** Active section mask, including when the section is locked. */
+  activeMask(): Uint8Array | null {
+    if (!this.activeId) return null
+    return this.find(this.activeId)?.mask ?? null
+  }
+
   clipForPaint(cutout: Uint8Array | null): { clip: StrokeClip | null; blocked: string | null } {
     if (!this.activeId) return { clip: null, blocked: null }
     const section = this.find(this.activeId)

@@ -37,12 +37,25 @@ export type SectionFill = {
   clip: StrokeClip
 }
 
+/** Highlight pigment along raised edges. Coverage is 0–255 per photo pixel. */
+export type EdgeHighlight = {
+  color: string
+  opacity: number
+  coverage: Uint8Array
+  width: number
+  height: number
+}
+
 export type HistoryAction =
   | { kind: 'stroke'; stroke: Stroke }
   | { kind: 'fill'; fill: SectionFill }
+  | { kind: 'highlight'; highlight: EdgeHighlight }
   | { kind: 'clear' }
 
-export type ReplayItem = { kind: 'stroke'; stroke: Stroke } | { kind: 'fill'; fill: SectionFill }
+export type ReplayItem =
+  | { kind: 'stroke'; stroke: Stroke }
+  | { kind: 'fill'; fill: SectionFill }
+  | { kind: 'highlight'; highlight: EdgeHighlight }
 
 export type Bounds = {
   x: number
@@ -64,7 +77,8 @@ export function projectActions(actions: readonly HistoryAction[]): {
       includeBase = false
       items.length = 0
     } else if (action.kind === 'stroke') items.push({ kind: 'stroke', stroke: action.stroke })
-    else items.push({ kind: 'fill', fill: action.fill })
+    else if (action.kind === 'fill') items.push({ kind: 'fill', fill: action.fill })
+    else items.push({ kind: 'highlight', highlight: action.highlight })
   }
   return { includeBase, items }
 }
@@ -232,6 +246,32 @@ export function paintSectionFill(ctx: CanvasRenderingContext2D, fill: SectionFil
   ctx.globalCompositeOperation = 'source-over'
   ctx.imageSmoothingEnabled = false
   ctx.drawImage(stamp.canvas, 0, 0, clip.width, clip.height, 0, 0, clip.width, clip.height)
+  ctx.restore()
+}
+
+/** Lay highlight pigment where the ridge coverage is non-zero. Photo luminance shades it on present. */
+export function paintEdgeHighlight(ctx: CanvasRenderingContext2D, highlight: EdgeHighlight): void {
+  const { coverage, color, opacity, width, height } = highlight
+  if (width < 1 || height < 1 || coverage.length !== width * height || !(opacity > 0)) return
+  const stamp = stampContext(width, height)
+  if (!stamp) return
+  stamp.setTransform(1, 0, 0, 1, 0, 0)
+  stamp.globalAlpha = 1
+  stamp.globalCompositeOperation = 'source-over'
+  stamp.clearRect(0, 0, width, height)
+  stamp.fillStyle = color
+  stamp.fillRect(0, 0, width, height)
+  const image = stamp.getImageData(0, 0, width, height)
+  const data = image.data
+  for (let i = 0; i < coverage.length; i += 1) {
+    const alpha = coverage[i] * opacity
+    data[i * 4 + 3] = alpha > 0 ? Math.min(255, Math.round(alpha)) : 0
+  }
+  stamp.putImageData(image, 0, 0)
+  ctx.save()
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.imageSmoothingEnabled = false
+  ctx.drawImage(stamp.canvas, 0, 0, width, height, 0, 0, width, height)
   ctx.restore()
 }
 

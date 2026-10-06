@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { displayHex, normalizeHex } from '../lib/color'
-import { RANGE_LABEL, type CatalogPaint } from '../lib/catalog'
+import { RANGE_LABEL, type CatalogPaint, type PaintRangeId } from '../lib/catalog'
 import { ROADMAP } from '../roadmap'
 import type { ColorScheme, SchemeColor } from '../types'
 import { IconPlus, IconTrash } from './Icons'
+import { PaintSuggestions } from './PaintSuggestions'
 
 type ColorPanelProps = {
   color: string
@@ -19,6 +20,12 @@ type ColorPanelProps = {
   onLoad: (scheme: ColorScheme) => void
   onAskDelete: (scheme: ColorScheme) => void
   pickedPaint: CatalogPaint | null
+  suggestionHex: string
+  suggestionSource: 'current' | 'section'
+  sectionPaintAvailable: boolean
+  preferRange: PaintRangeId | null
+  onSuggestionSource: (source: 'current' | 'section') => void
+  onPickPaint: (paint: CatalogPaint) => void
 }
 
 function formatSaved(timestamp: number): string {
@@ -39,6 +46,12 @@ export function ColorPanel({
   onLoad,
   onAskDelete,
   pickedPaint,
+  suggestionHex,
+  suggestionSource,
+  sectionPaintAvailable,
+  preferRange,
+  onSuggestionSource,
+  onPickPaint,
 }: ColorPanelProps) {
   const [hexDraft, setHexDraft] = useState(displayHex(color))
 
@@ -98,6 +111,15 @@ export function ColorPanel({
         </form>
       </section>
 
+      <PaintSuggestions
+        baseHex={suggestionHex}
+        source={suggestionSource}
+        sectionAvailable={sectionPaintAvailable}
+        preferRange={preferRange}
+        onSource={onSuggestionSource}
+        onPick={onPickPaint}
+      />
+
       <section className="panel-section">
         <h2>Recent</h2>
         <div className="swatches">
@@ -129,7 +151,6 @@ export function ColorPanel({
           Add colors, optionally label them, then save a named scheme in this browser.
         </p>
         {/* Palette labels stay free text. Armour, trim, undersuit, details, and custom labels live on sections. */}
-        {/* TODO(paint-suggestions): suggest highlights and shades from the base color. */}
         {/* TODO(paint-mix): mix two paints by ratio. */}
         <button type="button" className="btn add-color" onClick={onAdd} disabled={alreadyInPalette}>
           <IconPlus />

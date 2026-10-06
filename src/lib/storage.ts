@@ -1,5 +1,5 @@
 import { DEFAULT_COLOR, STARTER_COLORS, normalizeHex } from './color'
-import type { ColorScheme, SchemeColor, StudioPrefs, ThemeName } from '../types'
+import type { BackdropChoice, ColorScheme, SchemeColor, StudioPrefs, ThemeName } from '../types'
 
 export const THEME_KEY = 'warpaint-studio:theme'
 export const SCHEMES_KEY = 'warpaint-studio:schemes:v1'
@@ -76,12 +76,17 @@ export function saveSchemes(schemes: ColorScheme[]): void {
   writeRaw(SCHEMES_KEY, JSON.stringify(schemes))
 }
 
+const BACKDROPS = new Set<BackdropChoice>(['checker', 'black', 'grey', 'white', 'green', 'custom'])
+
 export function defaultPrefs(): StudioPrefs {
   return {
     color: DEFAULT_COLOR,
     recent: [...STARTER_COLORS],
     brushSize: 28,
     opacity: 1,
+    paintLook: 0,
+    backdrop: 'checker',
+    backdropColor: '#3a3a3a',
   }
 }
 
@@ -106,11 +111,24 @@ export function loadPrefs(): StudioPrefs {
       typeof parsed.opacity === 'number' && parsed.opacity >= 0.05 && parsed.opacity <= 1
         ? parsed.opacity
         : fallback.opacity
+    const paintLook =
+      typeof parsed.paintLook === 'number' && parsed.paintLook >= 0 && parsed.paintLook <= 1
+        ? parsed.paintLook
+        : fallback.paintLook
+    const backdrop =
+      typeof parsed.backdrop === 'string' && BACKDROPS.has(parsed.backdrop as BackdropChoice)
+        ? (parsed.backdrop as BackdropChoice)
+        : fallback.backdrop
+    const backdropColor =
+      typeof parsed.backdropColor === 'string' ? normalizeHex(parsed.backdropColor) : null
     return {
       color: color ?? fallback.color,
       recent: recent.length ? recent : fallback.recent,
       brushSize,
       opacity,
+      paintLook,
+      backdrop,
+      backdropColor: backdropColor ?? fallback.backdropColor,
     }
   } catch {
     return fallback

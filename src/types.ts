@@ -63,9 +63,19 @@ export type PhotoState = {
   cutoutActive: boolean
 }
 
+/** Viewing backdrop behind a cutout. Checker is the default empty stage. */
+export type BackdropChoice = 'checker' | 'black' | 'grey' | 'white' | 'green' | 'custom'
+
+/** Which pigment Auto highlight lays on the ridges. */
+export type HighlightPigment = 'lighter' | 'current'
+
 export type StudioPrefs = {
   color: string
   recent: string[]
   brushSize: number
   opacity: number
+  /** 0 is the original photo-locked tint. 1 is the more-paint look. */
+  paintLook: number
+  backdrop: BackdropChoice
+  backdropColor: string
 }

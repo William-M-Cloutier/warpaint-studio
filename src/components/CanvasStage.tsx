@@ -1,6 +1,15 @@
 import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { PaintSurface, type CutoutResult, type ViewState } from '../lib/paintSurface'
-import type { HistoryState, LoadedPhoto, MaskMode, PhotoState, SectionCategory, SectionInfo, Tool } from '../types'
+import type {
+  HighlightPigment,
+  HistoryState,
+  LoadedPhoto,
+  MaskMode,
+  PhotoState,
+  SectionCategory,
+  SectionInfo,
+  Tool,
+} from '../types'
 
 export type StageHandle = {
   undo: () => void
@@ -22,6 +31,8 @@ export type StageHandle = {
   proposeSections: () => number
   clearRidges: () => void
   fillSection: () => void
+  autoHighlight: (pigment: HighlightPigment) => 'ok' | 'empty' | 'blocked' | 'none'
+  sampleActivePigment: () => string | null
 }
 
 type CanvasStageProps = {
@@ -36,6 +47,9 @@ type CanvasStageProps = {
   edgeSnap: boolean
   snapStrength: number
   maskMode: MaskMode
+  paintLook: number
+  viewBackdrop: string | null
+  backdropImage: string | null
   sectionChip: { name: string; color: string } | null
   onPickColor: (hex: string, commit: boolean) => void
   onStroke: (hex: string) => void
@@ -60,6 +74,9 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     edgeSnap,
     snapStrength,
     maskMode,
+    paintLook,
+    viewBackdrop,
+    backdropImage,
     sectionChip,
     onPickColor,
     onStroke,
@@ -107,6 +124,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     edgeSnap,
     snapStrength,
     maskMode,
+    paintLook,
   })
   configRef.current = {
     tool,
@@ -119,6 +137,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     edgeSnap,
     snapStrength,
     maskMode,
+    paintLook,
   }
 
   useLayoutEffect(() => {
@@ -174,6 +193,8 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     proposeSections: () => surfaceRef.current?.proposeSections() ?? 0,
     clearRidges: () => surfaceRef.current?.clearRidges(),
     fillSection: () => surfaceRef.current?.fillSection(),
+    autoHighlight: (pigment: HighlightPigment) => surfaceRef.current?.autoHighlight(pigment) ?? 'none',
+    sampleActivePigment: () => surfaceRef.current?.sampleActivePigment() ?? null,
   }))
 
   const zoomLabel = `${Math.round(view.z * 100)}%`
@@ -186,7 +207,20 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       data-space={spaceHeld ? 'true' : 'false'}
       role="application"
       aria-label="Miniature photo. Paint tints the picture and keeps its light and shadow."
-      style={{ '--brush': `${brushSize * view.contentScale * view.z}px` } as CSSProperties}
+      style={
+        {
+          '--brush': `${brushSize * view.contentScale * view.z}px`,
+          ...(viewBackdrop || backdropImage
+            ? {
+                backgroundColor: viewBackdrop ?? '#111111',
+                backgroundImage: backdropImage ? `url("${backdropImage}")` : 'none',
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
+                backgroundRepeat: 'no-repeat',
+              }
+            : null),
+        } as CSSProperties
+      }
     >
       <div
         className="stage"
