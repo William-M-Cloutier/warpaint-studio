@@ -117,6 +117,9 @@ type LassoSession = {
   pointerId: number
   points: Point[]
   maskMode: MaskMode
+  snap: SnapGrid | null
+  snapStrength: number
+  margin: number
 }
 
 type WandSession = {
@@ -131,6 +134,9 @@ type SectionBrushSession = {
   size: number
   opacity: number
   prevBounds: Bounds | null
+  snap: SnapGrid | null
+  snapStrength: number
+  margin: number
 }
 
 type RidgeSession = {
@@ -833,9 +839,8 @@ export class PaintSurface {
       return
     }
     const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
-    const snap = this.edgeSnap ? this.snapGrid(clipTarget.clip?.mask ?? null) : null
-    const margin = snapMargin(size)
-    const start = snap ? this.clampImage(biasStrokePoint(snap, point, point, this.snapStrength, margin)) : point
+    const hug = this.strokeSnap(size, clipTarget.clip?.mask ?? null)
+    const start = this.biasSnapped(hug, point, point)
     const stroke: Stroke = {
       tool: this.tool,
       color: this.color,
@@ -850,9 +855,7 @@ export class PaintSurface {
       pointerId: event.pointerId,
       stroke,
       prevBounds: null,
-      snap,
-      snapStrength: this.snapStrength,
-      margin,
+      ...hug,
     }
     this.scheduleDraw()
     this.capture(event)
@@ -899,8 +902,12 @@ export class PaintSurface {
     for (const sample of samples) {
       let point = this.toImage(sample.clientX, sample.clientY)
       if (!point) continue
-      if (session.mode === 'draw' && session.snap) {
-        const last = session.stroke.points[session.stroke.points.length - 1]
+      if (
+        (session.mode === 'draw' || session.mode === 'lasso' || session.mode === 'section-brush') &&
+        session.snap
+      ) {
+        const points = session.mode === 'draw' ? session.stroke.points : session.points
+        const last = points[points.length - 1]
         point = this.clampImage(biasStrokePoint(session.snap, last, point, session.snapStrength, session.margin))
       }
       const points =
@@ -1214,8 +1221,17 @@ export class PaintSurface {
     }
 
     if (this.tool === 'lasso') {
-      this.session = { mode: 'lasso', pointerId: event.pointerId, points: [point], maskMode: this.maskMode }
-      this.refreshOverlay(null, [point])
+      const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
+      const hug = this.strokeSnap(size, this.sectionSnapMask())
+      const start = this.biasSnapped(hug, point, point)
+      this.session = {
+        mode: 'lasso',
+        pointerId: event.pointerId,
+        points: [start],
+        maskMode: this.maskMode,
+        ...hug,
+      }
+      this.refreshOverlay(null, [start])
       this.capture(event)
       return
     }
@@ -1226,13 +1242,16 @@ export class PaintSurface {
       return
     }
     const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
+    const hug = this.strokeSnap(size, this.sectionSnapMask())
+    const start = this.biasSnapped(hug, point, point)
     this.session = {
       mode: 'section-brush',
       pointerId: event.pointerId,
-      points: [point],
+      points: [start],
       size,
       opacity: this.opacity,
       prevBounds: null,
+      ...hug,
     }
     this.scheduleDraw()
     this.capture(event)
@@ -1385,6 +1404,34 @@ export class PaintSurface {
 
   private ridgeEdits() {
     return this.ridges.hasEdits ? this.ridges.maps : null
+  }
+
+  /** Ridges always. The active section is a barrier only while adding to it or subtracting from it. */
+  private sectionSnapMask(): Uint8Array | null {
+    if (this.maskMode === 'new') return null
+    return this.sections.clipForPaint(null).clip?.mask ?? null
+  }
+
+  private strokeSnap(size: number, sectionMask: Uint8Array | null): {
+    snap: SnapGrid | null
+    snapStrength: number
+    margin: number
+  } {
+    const snap = this.edgeSnap ? this.snapGrid(sectionMask) : null
+    return {
+      snap,
+      snapStrength: this.snapStrength,
+      margin: snap ? snapMargin(size) : 0,
+    }
+  }
+
+  private biasSnapped(
+    hug: { snap: SnapGrid | null; snapStrength: number; margin: number },
+    prev: Point,
+    point: Point,
+  ): Point {
+    if (!hug.snap) return point
+    return this.clampImage(biasStrokePoint(hug.snap, prev, point, hug.snapStrength, hug.margin))
   }
 
   private snapGrid(sectionMask: Uint8Array | null): SnapGrid | null {

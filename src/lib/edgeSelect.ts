@@ -216,7 +216,9 @@ export function selectionEdges(
 ): Uint8Array {
   if (width < 2 || height < 2) return new Uint8Array(Math.max(0, width * height))
   const map = buildEdgeMap(rgba, width, height)
-  const walls = wallsFor(map, tolerance, edits)
+  // Yellow overlay is automatic Canny after erases. A painted ridge is not run
+  // through Canny again — the stroke pixels themselves are the wall.
+  const walls = wallsFor(map, tolerance, edits, false)
   const full = new Uint8Array(width * height)
   const { scale } = map
   for (let y = 0; y < height; y += 1) {
@@ -503,11 +505,22 @@ function cannyPair(tolerance: number): { low: number; high: number } {
   return { low, high }
 }
 
-function wallsFor(map: EdgeMap, tolerance: number, edits?: RidgeEdits | null): Uint8Array {
+function wallsFor(
+  map: EdgeMap,
+  tolerance: number,
+  edits?: RidgeEdits | null,
+  includeAdds = true,
+): Uint8Array {
   const blurred = blurSubject(map)
   try {
     const { low, high } = cannyPair(tolerance)
-    return cannyWalls(blurred, map, low, high, coarsenRidges(map, edits))
+    let force = coarsenRidges(map, edits)
+    if (force && !includeAdds) {
+      const erased = new Uint8Array(force.length)
+      for (let i = 0; i < force.length; i += 1) if (force[i] === 2) erased[i] = 2
+      force = erased
+    }
+    return cannyWalls(blurred, map, low, high, force)
   } finally {
     blurred.delete()
   }
@@ -545,13 +558,16 @@ function coarsenRidges(map: EdgeMap, edits?: RidgeEdits | null): Uint8Array | nu
   return dilateForce(force, width, height)
 }
 
-/** A painted or erased ridge covers the cell beside it, so another threshold cannot revive a one-pixel seam. */
+/**
+ * An erased ridge covers the cell beside it, so Canny's own dilation cannot
+ * revive a one-pixel seam. An added ridge is left on the cells the stroke
+ * actually covers — widening it would outline the paint instead of using it.
+ */
 function dilateForce(force: Uint8Array, width: number, height: number): Uint8Array {
   const next = force.slice()
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const kind = force[y * width + x]
-      if (kind === 0) continue
+      if (force[y * width + x] !== 2) continue
       for (let dy = -1; dy <= 1; dy += 1) {
         const ny = y + dy
         if (ny < 0 || ny >= height) continue
@@ -559,8 +575,7 @@ function dilateForce(force: Uint8Array, width: number, height: number): Uint8Arr
           const nx = x + dx
           if (nx < 0 || nx >= width) continue
           const index = ny * width + nx
-          if (kind === 1) next[index] = 1
-          else if (next[index] !== 1) next[index] = 2
+          if (next[index] !== 1) next[index] = 2
         }
       }
     }

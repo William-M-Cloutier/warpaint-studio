@@ -143,6 +143,13 @@ assert.equal(halted.mask[50 * smoothW + 50], 255)
 assert.equal(halted.mask[50 * smoothW + 130], 0, 'a painted ridge stops the wand')
 const guided = edgeGuide(smooth, smoothW, smoothH, 48, forced)
 assert.equal(guided.wall[50 * guided.width + 90], 1, 'the painted ridge is a wall for edge snap')
+assert.equal(guided.wall[50 * guided.width + 89], 0, 'the wall is the stroke, not a ring beside it')
+assert.equal(guided.wall[50 * guided.width + 92], 0, 'the wall is the stroke, not a ring beside it')
+const shown = selectionEdges(smooth, smoothW, smoothH, 48, forced)
+assert.equal(shown[50 * smoothW + 89], 0, 'show edges does not outline the painted stroke')
+assert.equal(shown[50 * smoothW + 90], 0, 'show edges does not re-edge the painted stroke')
+assert.equal(shown[50 * smoothW + 91], 0, 'show edges does not re-edge the painted stroke')
+assert.equal(shown[50 * smoothW + 92], 0, 'show edges does not outline the painted stroke')
 const snapBarriers = buildBarrierGrid(
   guided.wall,
   guided.subject,

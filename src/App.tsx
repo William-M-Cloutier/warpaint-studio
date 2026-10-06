@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CanvasStage, type StageHandle } from './components/CanvasStage'
+import { CatalogBrowser } from './components/CatalogBrowser'
 import { ColorPanel } from './components/ColorPanel'
 import { Dialog } from './components/Dialog'
 import { SectionPanel } from './components/SectionPanel'
@@ -33,6 +34,14 @@ type DialogState =
   | null
 
 type Notice = { id: number; text: string }
+
+type SideTab = 'color' | 'sections' | 'catalog'
+
+const SIDE_TABS: { id: SideTab; label: string }[] = [
+  { id: 'color', label: 'Color' },
+  { id: 'sections', label: 'Sections' },
+  { id: 'catalog', label: 'Catalog' },
+]
 
 const EMPTY_HISTORY: HistoryState = { canUndo: false, canRedo: false, hasPaint: false }
 
@@ -79,6 +88,7 @@ export function App() {
   const [ridgesActive, setRidgesActive] = useState(false)
   const [pickedId, setPickedId] = useState<string | null>(null)
   const [proposeBusy, setProposeBusy] = useState(false)
+  const [sideTab, setSideTab] = useState<SideTab>('color')
 
   const stageRef = useRef<StageHandle>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -274,9 +284,16 @@ export function App() {
       else if (key === 'h' || key === '4') setTool('pan')
       else if (key === 'r') setTool('restore')
       else if (key === 'x') setTool('eraseBackdrop')
-      else if (key === 'w') setTool('wand')
-      else if (key === 'l') setTool('lasso')
-      else if (key === 'm') setTool('maskBrush')
+      else if (key === 'w') {
+        setTool('wand')
+        setSideTab('sections')
+      } else if (key === 'l') {
+        setTool('lasso')
+        setSideTab('sections')
+      } else if (key === 'm') {
+        setTool('maskBrush')
+        setSideTab('sections')
+      }
       else if (key === 's') setEdgeSnap((enabled) => !enabled)
       else if (event.key === '[') setBrushSize((size) => clampSize(size - (event.shiftKey ? 10 : 2)))
       else if (event.key === ']') setBrushSize((size) => clampSize(size + (event.shiftKey ? 10 : 2)))
@@ -436,6 +453,11 @@ export function App() {
           snapStrength={snapStrength}
           onEdgeSnap={setEdgeSnap}
           onSnapStrength={setSnapStrength}
+          showEdgeSnap={
+            tool === 'brush' ||
+            tool === 'eraser' ||
+            ((tool === 'lasso' || tool === 'maskBrush') && sideTab !== 'sections')
+          }
         />
         <CanvasStage
           ref={stageRef}
@@ -464,6 +486,44 @@ export function App() {
           onRidges={setRidgesActive}
         />
         <div className="side-stack">
+        <div
+          className="side-tabs"
+          role="tablist"
+          aria-label="Side panels"
+          onKeyDown={(event) => {
+            const index = SIDE_TABS.findIndex((entry) => entry.id === sideTab)
+            if (index < 0) return
+            if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
+            event.preventDefault()
+            const step = event.key === 'ArrowRight' ? 1 : -1
+            const next = SIDE_TABS[(index + step + SIDE_TABS.length) % SIDE_TABS.length]
+            setSideTab(next.id)
+            document.getElementById(`side-tab-${next.id}`)?.focus()
+          }}
+        >
+          {SIDE_TABS.map((entry) => (
+            <button
+              key={entry.id}
+              id={`side-tab-${entry.id}`}
+              type="button"
+              className="side-tab"
+              role="tab"
+              aria-selected={sideTab === entry.id}
+              aria-controls={`side-panel-${entry.id}`}
+              tabIndex={sideTab === entry.id ? 0 : -1}
+              onClick={() => setSideTab(entry.id)}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+        <div
+          className="side-tabpanel"
+          role="tabpanel"
+          id="side-panel-sections"
+          aria-labelledby="side-tab-sections"
+          hidden={sideTab !== 'sections'}
+        >
         <SectionPanel
           hasImage={image !== null}
           tool={tool}
@@ -490,10 +550,23 @@ export function App() {
           hasRidges={ridgesActive}
           onRidgeTool={(next) => {
             setShowEdges(true)
+            setSideTab('sections')
             setTool(next)
           }}
           onClearRidges={() => stageRef.current?.clearRidges()}
+          edgeSnap={edgeSnap}
+          snapStrength={snapStrength}
+          onEdgeSnap={setEdgeSnap}
+          onSnapStrength={setSnapStrength}
         />
+        </div>
+        <div
+          className="side-tabpanel"
+          role="tabpanel"
+          id="side-panel-color"
+          aria-labelledby="side-tab-color"
+          hidden={sideTab !== 'color'}
+        >
         <ColorPanel
           color={color}
           recent={recent}
@@ -519,12 +592,26 @@ export function App() {
           onLoad={loadScheme}
           onAskDelete={(scheme) => setDialog({ type: 'delete', scheme })}
           pickedPaint={pickedId ? paintById(pickedId) : null}
-          onPickPaint={(paint) => {
-            setColor(paint.hex)
-            setPickedId(paint.id)
-            remember(paint.hex)
-          }}
         />
+        </div>
+        <div
+          className="side-tabpanel"
+          role="tabpanel"
+          id="side-panel-catalog"
+          aria-labelledby="side-tab-catalog"
+          hidden={sideTab !== 'catalog'}
+        >
+          <aside className="panel catalog-panel" aria-label="Paint catalog">
+            <CatalogBrowser
+              pickedId={pickedId}
+              onPick={(paint) => {
+                setColor(paint.hex)
+                setPickedId(paint.id)
+                remember(paint.hex)
+              }}
+            />
+          </aside>
+        </div>
         </div>
       </div>
 

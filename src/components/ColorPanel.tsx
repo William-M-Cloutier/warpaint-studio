@@ -3,7 +3,6 @@ import { displayHex, normalizeHex } from '../lib/color'
 import { RANGE_LABEL, type CatalogPaint } from '../lib/catalog'
 import { ROADMAP } from '../roadmap'
 import type { ColorScheme, SchemeColor } from '../types'
-import { CatalogBrowser } from './CatalogBrowser'
 import { IconPlus, IconTrash } from './Icons'
 
 type ColorPanelProps = {
@@ -20,7 +19,6 @@ type ColorPanelProps = {
   onLoad: (scheme: ColorScheme) => void
   onAskDelete: (scheme: ColorScheme) => void
   pickedPaint: CatalogPaint | null
-  onPickPaint: (paint: CatalogPaint) => void
 }
 
 function formatSaved(timestamp: number): string {
@@ -41,7 +39,6 @@ export function ColorPanel({
   onLoad,
   onAskDelete,
   pickedPaint,
-  onPickPaint,
 }: ColorPanelProps) {
   const [hexDraft, setHexDraft] = useState(displayHex(color))
 
@@ -100,8 +97,6 @@ export function ColorPanel({
           />
         </form>
       </section>
-
-      <CatalogBrowser pickedId={pickedPaint?.id ?? null} onPick={onPickPaint} />
 
       <section className="panel-section">
         <h2>Recent</h2>

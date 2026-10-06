@@ -1,5 +1,6 @@
 import { SECTION_PRESETS, presetLabel } from '../lib/sections'
 import type { MaskMode, SectionCategory, SectionInfo, Tool } from '../types'
+import { EdgeSnapControls } from './EdgeSnapControls'
 import { IconEye, IconEyeOff, IconLock, IconTrash, IconUnlock } from './Icons'
 
 type SectionPanelProps = {
@@ -25,6 +26,10 @@ type SectionPanelProps = {
   hasRidges: boolean
   onRidgeTool: (tool: 'edgeAdd' | 'edgeErase') => void
   onClearRidges: () => void
+  edgeSnap: boolean
+  snapStrength: number
+  onEdgeSnap: (enabled: boolean) => void
+  onSnapStrength: (strength: number) => void
 }
 
 const SECTION_TOOLS: { id: Tool; label: string; shortcut: string }[] = [
@@ -62,6 +67,10 @@ export function SectionPanel({
   hasRidges,
   onRidgeTool,
   onClearRidges,
+  edgeSnap,
+  snapStrength,
+  onEdgeSnap,
+  onSnapStrength,
 }: SectionPanelProps) {
   const active = sections.find((section) => section.id === activeId) ?? null
   const activeName = active ? active.name.trim() || 'Untitled section' : null
@@ -91,6 +100,14 @@ export function SectionPanel({
           </button>
         ))}
       </div>
+      {(tool === 'lasso' || tool === 'maskBrush') && (
+        <EdgeSnapControls
+          edgeSnap={edgeSnap}
+          snapStrength={snapStrength}
+          onEdgeSnap={onEdgeSnap}
+          onSnapStrength={onSnapStrength}
+        />
+      )}
       <div className="segmented" role="radiogroup" aria-label="How the mask tool writes">
         {MASK_MODES.map((entry) => (
           <button
@@ -106,22 +123,20 @@ export function SectionPanel({
           </button>
         ))}
       </div>
-      {tool === 'wand' && (
-        <label className="tool-slider section-tolerance">
-          <span>Edge tolerance</span>
-          <input
-            type="range"
-            min={0}
-            max={120}
-            step={1}
-            value={tolerance}
-            aria-label="Wand tolerance"
-            disabled={!hasImage}
-            onChange={(event) => onTolerance(Number(event.target.value))}
-          />
-          <span className="slider-value">{tolerance}</span>
-        </label>
-      )}
+      <label className="tool-slider section-tolerance">
+        <span>Edge tolerance</span>
+        <input
+          type="range"
+          min={0}
+          max={120}
+          step={1}
+          value={tolerance}
+          aria-label="Edge tolerance"
+          disabled={!hasImage}
+          onChange={(event) => onTolerance(Number(event.target.value))}
+        />
+        <span className="slider-value">{tolerance}</span>
+      </label>
       <label className="edge-toggle">
         <input
           type="checkbox"
@@ -158,8 +173,9 @@ export function SectionPanel({
       </button>
       <p className="tool-note">
         Edge-aware wand. It grows across a plate and stops at a Canny ridge, so a shade ramp stays one region.
-        Show edges draws those ridges in yellow. Add ridge paints a missing one, highlighted in blue. Erase ridge
-        knocks a false one out. The wand, Suggest, and Stay inside lines follow that edited map. Both undo.
+        Show edges draws those automatic ridges in yellow. Add ridge paints the wall itself in blue — that stroke
+        is the ridge, not a second outline. Erase ridge knocks a false one out. The wand, Suggest, and Stay inside
+        lines follow that edited map. Both undo. Edge tolerance stays here for the wand and those ridge tools.
       </p>
       <button
         type="button"
