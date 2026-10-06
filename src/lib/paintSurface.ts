@@ -415,7 +415,6 @@ export class PaintSurface {
     if (Math.abs(zoom - 1) < 0.015) zoom = 1
     this.zoom = zoom
     this.center(displayW, displayH)
-    this.applyLiveBrushSize()
     this.emitView()
     this.emitPhoto()
   }
@@ -441,7 +440,6 @@ export class PaintSurface {
     if (!Number.isFinite(zoom)) return
     this.zoom = zoom
     this.center(displayW, displayH)
-    this.applyLiveBrushSize()
     this.emitView()
   }
 
@@ -462,7 +460,6 @@ export class PaintSurface {
       x: cx - localX * ratio * this.zoom,
       y: cy - localY * ratio * this.zoom,
     }
-    this.applyLiveBrushSize()
     this.emitView()
     this.emitPhoto()
   }
@@ -830,7 +827,6 @@ export class PaintSurface {
     const imageY = (mouseY - this.pan.y) / this.zoom
     this.zoom = next
     this.pan = { x: mouseX - imageX * next, y: mouseY - imageY * next }
-    this.applyLiveBrushSize()
     this.queueView()
   }
 
@@ -878,7 +874,7 @@ export class PaintSurface {
     if (isMaskTool(this.tool)) {
       const stroke: MaskStroke = {
         tool: this.tool,
-        size: Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5),
+        size: this.strokeWidth(),
         opacity: this.opacity,
         points: [point],
       }
@@ -895,7 +891,7 @@ export class PaintSurface {
       this.emit.error(clipTarget.blocked)
       return
     }
-    const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
+    const size = this.strokeWidth()
     const hug = this.strokeSnap(size, clipTarget.clip?.mask ?? null)
     const start = event.shiftKey ? point : this.biasSnapped(hug, point, point)
     const stroke: Stroke = {
@@ -1275,7 +1271,7 @@ export class PaintSurface {
     }
 
     if (this.tool === 'lasso') {
-      const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
+      const size = this.strokeWidth()
       const hug = this.strokeSnap(size, this.sectionSnapMask())
       const start = event.shiftKey ? point : this.biasSnapped(hug, point, point)
       this.session = {
@@ -1296,7 +1292,7 @@ export class PaintSurface {
       this.emit.error(started.reason)
       return
     }
-    const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
+    const size = this.strokeWidth()
     const hug = this.strokeSnap(size, this.sectionSnapMask())
     const start = event.shiftKey ? point : this.biasSnapped(hug, point, point)
     this.session = {
@@ -1386,7 +1382,7 @@ export class PaintSurface {
   private startRidge(event: PointerEvent, point: Point): void {
     const stroke: RidgeStroke = {
       tool: this.tool === 'edgeErase' ? 'erase' : 'add',
-      size: Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5),
+      size: this.strokeWidth(),
       points: [point],
     }
     this.session = { mode: 'ridge', pointerId: event.pointerId, stroke, line: lineFrom(point, event.shiftKey) }
@@ -1695,20 +1691,16 @@ export class PaintSurface {
   private applyLiveBrushSize(): void {
     const session = this.session
     if (!session) return
-    const size = Math.max(this.brushSize * this.imagePixelsPerScreenPixel(), 0.5)
+    const size = this.strokeWidth()
     if (session.mode === 'section-brush') session.size = size
     else if (session.mode === 'ridge') session.stroke.size = size
     else if (session.mode === 'draw') session.stroke.size = size
     else if (session.mode === 'mask') session.stroke.size = size
   }
 
-  /**
-   * Photo pixels per screen pixel. The stage is contentScale, then view zoom.
-   * The canvas rect can disagree for a frame (transform not applied yet, or a
-   * zero box), and feeding that into an in-progress stroke made the dab jump.
-   */
-  private imagePixelsPerScreenPixel(): number {
-    return 1 / Math.max(0.0001, this.zoom * this.contentScale)
+  /** Size is photo pixels. View zoom and photo scale only magnify the screen. */
+  private strokeWidth(): number {
+    return Math.max(this.brushSize, 0.5)
   }
 
   private toImage(clientX: number, clientY: number): Point | null {

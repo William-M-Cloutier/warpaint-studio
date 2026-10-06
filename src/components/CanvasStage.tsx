@@ -186,7 +186,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       data-space={spaceHeld ? 'true' : 'false'}
       role="application"
       aria-label="Miniature photo. Paint tints the picture and keeps its light and shadow."
-      style={{ '--brush': `${brushSize}px` } as CSSProperties}
+      style={{ '--brush': `${brushSize * view.contentScale * view.z}px` } as CSSProperties}
     >
       <div
         className="stage"
