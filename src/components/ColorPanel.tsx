@@ -26,6 +26,10 @@ type ColorPanelProps = {
   preferRange: PaintRangeId | null
   onSuggestionSource: (source: 'current' | 'section') => void
   onPickPaint: (paint: CatalogPaint) => void
+  undercoat: boolean
+  undercoatStrength: number
+  onUndercoat: (enabled: boolean) => void
+  onUndercoatStrength: (strength: number) => void
 }
 
 function formatSaved(timestamp: number): string {
@@ -52,6 +56,10 @@ export function ColorPanel({
   preferRange,
   onSuggestionSource,
   onPickPaint,
+  undercoat,
+  undercoatStrength,
+  onUndercoat,
+  onUndercoatStrength,
 }: ColorPanelProps) {
   const [hexDraft, setHexDraft] = useState(displayHex(color))
 
@@ -109,6 +117,36 @@ export function ColorPanel({
             onBlur={commitHex}
           />
         </form>
+      </section>
+
+      <section className="panel-section" aria-label="Undercoat">
+        <h2>Undercoat</h2>
+        <label className="edge-toggle">
+          <input
+            type="checkbox"
+            checked={undercoat}
+            aria-label="Undercoat"
+            onChange={(event) => onUndercoat(event.target.checked)}
+          />
+          <span>Undercoat</span>
+        </label>
+        <label className="tool-slider">
+          <span>Strength</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={Math.round(undercoatStrength * 100)}
+            aria-label="Undercoat strength"
+            disabled={!undercoat}
+            onChange={(event) => onUndercoatStrength(Number(event.target.value) / 100)}
+          />
+          <span className="slider-value">{Math.round(undercoatStrength * 100)}</span>
+        </label>
+        <p className="hint">
+          On: the next brush, fill, or highlight is shadowed by the paint already on those pixels. Off: a clean coat.
+        </p>
       </section>
 
       <PaintSuggestions

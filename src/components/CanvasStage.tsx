@@ -48,6 +48,7 @@ type CanvasStageProps = {
   snapStrength: number
   maskMode: MaskMode
   paintLook: number
+  undercoat: number
   viewBackdrop: string | null
   backdropImage: string | null
   sectionChip: { name: string; color: string } | null
@@ -75,6 +76,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     snapStrength,
     maskMode,
     paintLook,
+    undercoat,
     viewBackdrop,
     backdropImage,
     sectionChip,
@@ -125,6 +127,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     snapStrength,
     maskMode,
     paintLook,
+    undercoat,
   })
   configRef.current = {
     tool,
@@ -138,6 +141,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     snapStrength,
     maskMode,
     paintLook,
+    undercoat,
   }
 
   useLayoutEffect(() => {

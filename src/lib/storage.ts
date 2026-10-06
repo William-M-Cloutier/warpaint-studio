@@ -1,5 +1,6 @@
 import { DEFAULT_COLOR, STARTER_COLORS, normalizeHex } from './color'
 import { PAINT_LOOK_DEFAULT } from './tint'
+import { UNDERCOAT_DEFAULT } from './undercoat'
 import type { BackdropChoice, ColorScheme, SchemeColor, StudioPrefs, ThemeName } from '../types'
 
 export const THEME_KEY = 'warpaint-studio:theme'
@@ -86,6 +87,8 @@ export function defaultPrefs(): StudioPrefs {
     brushSize: 28,
     opacity: 1,
     paintLook: PAINT_LOOK_DEFAULT,
+    undercoat: false,
+    undercoatStrength: UNDERCOAT_DEFAULT,
     backdrop: 'checker',
     backdropColor: '#3a3a3a',
   }
@@ -116,6 +119,11 @@ export function loadPrefs(): StudioPrefs {
       typeof parsed.paintLook === 'number' && parsed.paintLook >= 0 && parsed.paintLook <= 1
         ? parsed.paintLook
         : fallback.paintLook
+    const undercoat = typeof parsed.undercoat === 'boolean' ? parsed.undercoat : fallback.undercoat
+    const undercoatStrength =
+      typeof parsed.undercoatStrength === 'number' && parsed.undercoatStrength >= 0 && parsed.undercoatStrength <= 1
+        ? parsed.undercoatStrength
+        : fallback.undercoatStrength
     const backdrop =
       typeof parsed.backdrop === 'string' && BACKDROPS.has(parsed.backdrop as BackdropChoice)
         ? (parsed.backdrop as BackdropChoice)
@@ -128,6 +136,8 @@ export function loadPrefs(): StudioPrefs {
       brushSize,
       opacity,
       paintLook,
+      undercoat,
+      undercoatStrength,
       backdrop,
       backdropColor: backdropColor ?? fallback.backdropColor,
     }

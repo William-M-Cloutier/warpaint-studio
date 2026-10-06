@@ -16,6 +16,7 @@ try {
   await server.ssrLoadModule('/scripts/check-highlight.ts')
   await server.ssrLoadModule('/scripts/check-suggest.ts')
   await server.ssrLoadModule('/scripts/check-look.ts')
+  await server.ssrLoadModule('/scripts/check-undercoat.ts')
 } finally {
   await server.close()
 }

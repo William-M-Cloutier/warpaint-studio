@@ -57,6 +57,8 @@ export type SurfaceConfig = {
   edgeSnap: boolean
   snapStrength: number
   paintLook: number
+  /** 0 is a clean coat. Above 0, existing pigment shadows the next brush, fill, or highlight. */
+  undercoat: number
 }
 
 type SurfaceEvents = {
@@ -255,6 +257,7 @@ export class PaintSurface {
   private edgeSnap = false
   private snapStrength = DEFAULT_SNAP_STRENGTH
   private paintLook = PAINT_LOOK_DEFAULT
+  private undercoat = 0
   private edgeMask: Uint8Array | null = null
   private maskMode: MaskMode = 'new'
   private readonly sections = new SectionLayer()
@@ -323,6 +326,7 @@ export class PaintSurface {
     const look = Math.min(1, Math.max(0, config.paintLook))
     const lookChanged = Math.abs(look - this.paintLook) > 0.0001
     this.paintLook = look
+    this.undercoat = Math.min(1, Math.max(0, config.undercoat))
     this.maskMode = config.maskMode
     if (lookChanged && this.image) this.present(null)
     if (this.ring && !showsBrushRing(config.tool, config.space)) {
@@ -700,7 +704,7 @@ export class PaintSurface {
       this.emit.error('That section is empty.')
       return
     }
-    const fill = { color: this.color, opacity: this.opacity, clip }
+    const fill = { color: this.color, opacity: this.opacity, clip, undercoat: this.undercoat }
     paintSectionFill(this.tintCtx, fill)
     this.present(null)
     this.push({ kind: 'fill', fill })
@@ -749,6 +753,7 @@ export class PaintSurface {
       coverage: built.coverage,
       width,
       height,
+      undercoat: this.undercoat,
     }
     paintEdgeHighlight(this.tintCtx, highlight)
     this.present(null)
@@ -985,6 +990,7 @@ export class PaintSurface {
       opacity: this.opacity,
       points: [start],
       clip: clipTarget.clip ?? undefined,
+      undercoat: this.tool === 'eraser' ? 0 : this.undercoat,
     }
     this.snapshotBackup()
     this.session = {

@@ -27,6 +27,7 @@ Node 20 or newer.
 - **Highlight** is the fifth tool on the left strip. It paints with a lighter mix of the current colour, for raised edges. The photo still shades that lighter pigment. It is a stroke, separate from **Fill**.
 - **Auto highlight**, under those tools, paints the raised edges in one step. **Lighter** uses the Highlight mix. **Current** uses the colour as it is, still shaded by the photo. With a section active, it stays inside that section. Otherwise it covers the miniature. **Stay inside lines** makes the band hug the ridge, and **Hug** sets how tight. It is one undo step. It uses the same ridges as **Show edges**, including ridges you add or erase.
 - **Fill** is the sixth control on that strip. One click coats the active section with the current colour. The photo still supplies light and shadow, and paint outside that mask is left alone. The previous tool stays selected. **F** does the same.
+- **Undercoat**, on the Color tab, is not a separate layer. Paint a colour first. Pick the next colour and turn **Undercoat** on. Brush, Fill, Highlight, and Auto highlight then let the pigment already on those pixels shadow the new colour. **Strength** sets how far that goes, and opens at 60. Off is a clean coat. Turn it on or off again for each new colour. It is part of that stroke, so undo removes the coat.
 - **Eraser** removes the tint and restores the original photo in that spot.
 - **Eyedropper** on a painted spot picks the pigment you brushed (the swatch), not the lighter or darker shade created by the photo's lighting. On an unpainted spot it picks the photo color. Painting with that swatch again lays the same coat back down; the picture still supplies the light and shadow.
 - **Photo scale** resizes the uploaded picture. The slider and percent sit in the left tool strip, labeled **Photo scale**. **Auto** (or Shift+0) fits that picture in the canvas without stretching either side, then frames the view. It also runs when a photo is uploaded.
@@ -88,6 +89,7 @@ Photos stay in memory for the session. A new photo replaces the current one. If 
 - `src/lib/suggest.ts` — catalog base, highlight, and shade matches
 - `src/lib/backdrop.ts` — viewing-background presets
 - `src/lib/tint.ts` — luminance shading of the paint coat, and the photo-to-paint look
+- `src/lib/undercoat.ts` — shadow a new coat with the pigment already on those pixels
 - `src/roadmap.ts` — features that are listed and **not** built yet
 - `fixtures/stormcast-acceptance.jpg` — grey unpainted Stormcast (axe, shield, halo helm on white), 1600×1200. Acceptance photo for wand, auto highlight, suggestions, look, and viewing background. Upload it; the app does not load it on its own.
 

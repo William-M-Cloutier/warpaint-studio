@@ -104,6 +104,8 @@ export function App() {
   const [proposeBusy, setProposeBusy] = useState(false)
   const [sideTab, setSideTab] = useState<SideTab>('color')
   const [paintLook, setPaintLook] = useState(initialPrefs.current.paintLook)
+  const [undercoat, setUndercoat] = useState(initialPrefs.current.undercoat)
+  const [undercoatStrength, setUndercoatStrength] = useState(initialPrefs.current.undercoatStrength)
   const [highlightPigment, setHighlightPigment] = useState<HighlightPigment>('lighter')
   const [highlightBusy, setHighlightBusy] = useState(false)
   const [suggestionSource, setSuggestionSource] = useState<'current' | 'section'>('current')
@@ -129,8 +131,8 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    savePrefs({ color, recent, brushSize, opacity, paintLook, backdrop, backdropColor })
-  }, [color, recent, brushSize, opacity, paintLook, backdrop, backdropColor])
+    savePrefs({ color, recent, brushSize, opacity, paintLook, undercoat, undercoatStrength, backdrop, backdropColor })
+  }, [color, recent, brushSize, opacity, paintLook, undercoat, undercoatStrength, backdrop, backdropColor])
 
   useEffect(() => {
     if (!notice) return
@@ -585,6 +587,7 @@ export function App() {
           snapStrength={snapStrength}
           maskMode={maskMode}
           paintLook={paintLook}
+          undercoat={undercoat ? undercoatStrength : 0}
           viewBackdrop={cutoutActive ? backdropCssColor(backdrop, backdropColor) : null}
           backdropImage={cutoutActive ? backdropImage : null}
           sectionChip={sectionChip}
@@ -715,6 +718,10 @@ export function App() {
           preferRange={preferRange}
           onSuggestionSource={setSuggestionSource}
           onPickPaint={pickCatalogPaint}
+          undercoat={undercoat}
+          undercoatStrength={undercoatStrength}
+          onUndercoat={setUndercoat}
+          onUndercoatStrength={setUndercoatStrength}
         />
         </div>
         <div
