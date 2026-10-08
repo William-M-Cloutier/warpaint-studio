@@ -63,9 +63,23 @@ export type PhotoState = {
   cutoutActive: boolean
 }
 
+/** Viewing backdrop behind a cutout. Checker is the default empty stage. */
+export type BackdropChoice = 'checker' | 'black' | 'grey' | 'white' | 'green' | 'custom'
+
+/** Which pigment Auto highlight lays on the ridges. */
+export type HighlightPigment = 'lighter' | 'current'
+
 export type StudioPrefs = {
   color: string
   recent: string[]
   brushSize: number
   opacity: number
+  /** 0–1 of the 0–100 Look slider. 0 is the original tint. 1 is a light coat (old strength ~15). Opens at 0.6. */
+  paintLook: number
+  /** Next coat is shadowed by pigment already on those pixels. Off is a clean coat. */
+  undercoat: boolean
+  /** 0–1. Used when Undercoat is on. */
+  undercoatStrength: number
+  backdrop: BackdropChoice
+  backdropColor: string
 }

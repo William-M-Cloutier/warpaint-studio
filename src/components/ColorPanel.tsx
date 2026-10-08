@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { displayHex, normalizeHex } from '../lib/color'
-import { RANGE_LABEL, type CatalogPaint } from '../lib/catalog'
+import { RANGE_LABEL, type CatalogPaint, type PaintRangeId } from '../lib/catalog'
 import { ROADMAP } from '../roadmap'
 import type { ColorScheme, SchemeColor } from '../types'
 import { IconPlus, IconTrash } from './Icons'
+import { PaintSuggestions } from './PaintSuggestions'
 
 type ColorPanelProps = {
   color: string
@@ -19,6 +20,16 @@ type ColorPanelProps = {
   onLoad: (scheme: ColorScheme) => void
   onAskDelete: (scheme: ColorScheme) => void
   pickedPaint: CatalogPaint | null
+  suggestionHex: string
+  suggestionSource: 'current' | 'section'
+  sectionPaintAvailable: boolean
+  preferRange: PaintRangeId | null
+  onSuggestionSource: (source: 'current' | 'section') => void
+  onPickPaint: (paint: CatalogPaint) => void
+  undercoat: boolean
+  undercoatStrength: number
+  onUndercoat: (enabled: boolean) => void
+  onUndercoatStrength: (strength: number) => void
 }
 
 function formatSaved(timestamp: number): string {
@@ -39,6 +50,16 @@ export function ColorPanel({
   onLoad,
   onAskDelete,
   pickedPaint,
+  suggestionHex,
+  suggestionSource,
+  sectionPaintAvailable,
+  preferRange,
+  onSuggestionSource,
+  onPickPaint,
+  undercoat,
+  undercoatStrength,
+  onUndercoat,
+  onUndercoatStrength,
 }: ColorPanelProps) {
   const [hexDraft, setHexDraft] = useState(displayHex(color))
 
@@ -98,6 +119,45 @@ export function ColorPanel({
         </form>
       </section>
 
+      <section className="panel-section" aria-label="Undercoat">
+        <h2>Undercoat</h2>
+        <label className="edge-toggle">
+          <input
+            type="checkbox"
+            checked={undercoat}
+            aria-label="Undercoat"
+            onChange={(event) => onUndercoat(event.target.checked)}
+          />
+          <span>Undercoat</span>
+        </label>
+        <label className="tool-slider">
+          <span>Strength</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={Math.round(undercoatStrength * 100)}
+            aria-label="Undercoat strength"
+            disabled={!undercoat}
+            onChange={(event) => onUndercoatStrength(Number(event.target.value) / 100)}
+          />
+          <span className="slider-value">{Math.round(undercoatStrength * 100)}</span>
+        </label>
+        <p className="hint">
+          On: the next brush, fill, or highlight is shadowed by the paint already on those pixels. Off: a clean coat.
+        </p>
+      </section>
+
+      <PaintSuggestions
+        baseHex={suggestionHex}
+        source={suggestionSource}
+        sectionAvailable={sectionPaintAvailable}
+        preferRange={preferRange}
+        onSource={onSuggestionSource}
+        onPick={onPickPaint}
+      />
+
       <section className="panel-section">
         <h2>Recent</h2>
         <div className="swatches">
@@ -129,7 +189,6 @@ export function ColorPanel({
           Add colors, optionally label them, then save a named scheme in this browser.
         </p>
         {/* Palette labels stay free text. Armour, trim, undersuit, details, and custom labels live on sections. */}
-        {/* TODO(paint-suggestions): suggest highlights and shades from the base color. */}
         {/* TODO(paint-mix): mix two paints by ratio. */}
         <button type="button" className="btn add-color" onClick={onAdd} disabled={alreadyInPalette}>
           <IconPlus />

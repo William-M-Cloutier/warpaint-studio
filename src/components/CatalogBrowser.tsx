@@ -10,10 +10,16 @@ import {
   type CatalogPaint,
   type PaintRangeId,
 } from '../lib/catalog'
+import { PaintSuggestions } from './PaintSuggestions'
 
 type CatalogBrowserProps = {
   pickedId: string | null
   onPick: (paint: CatalogPaint) => void
+  suggestionHex: string
+  suggestionSource: 'current' | 'section'
+  sectionPaintAvailable: boolean
+  preferRange: PaintRangeId | null
+  onSuggestionSource: (source: 'current' | 'section') => void
 }
 
 const RANGES: { id: PaintRangeId | 'all'; label: string }[] = [
@@ -24,7 +30,15 @@ const RANGES: { id: PaintRangeId | 'all'; label: string }[] = [
   { id: 'two-thin-coats', label: 'Two Thin Coats' },
 ]
 
-export function CatalogBrowser({ pickedId, onPick }: CatalogBrowserProps) {
+export function CatalogBrowser({
+  pickedId,
+  onPick,
+  suggestionHex,
+  suggestionSource,
+  sectionPaintAvailable,
+  preferRange,
+  onSuggestionSource,
+}: CatalogBrowserProps) {
   const [query, setQuery] = useState('')
   const [range, setRange] = useState<PaintRangeId | 'all'>('all')
   const paints = useMemo(() => filterPaints(query, range), [query, range])
@@ -32,6 +46,14 @@ export function CatalogBrowser({ pickedId, onPick }: CatalogBrowserProps) {
 
   return (
     <section className="panel-section catalog" aria-label="Paint catalog">
+      <PaintSuggestions
+        baseHex={suggestionHex}
+        source={suggestionSource}
+        sectionAvailable={sectionPaintAvailable}
+        preferRange={preferRange}
+        onSource={onSuggestionSource}
+        onPick={onPick}
+      />
       <h2>Paint catalog</h2>
       <p className="hint">
         Approximate screen colours for preview. Coverage and finish describe the product, not a review score.

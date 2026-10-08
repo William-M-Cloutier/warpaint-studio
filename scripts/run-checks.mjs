@@ -13,6 +13,10 @@ try {
   await server.ssrLoadModule('/scripts/check-edge-snap.ts')
   await server.ssrLoadModule('/scripts/check-catalog.ts')
   await server.ssrLoadModule('/scripts/check-tools.ts')
+  await server.ssrLoadModule('/scripts/check-highlight.ts')
+  await server.ssrLoadModule('/scripts/check-suggest.ts')
+  await server.ssrLoadModule('/scripts/check-look.ts')
+  await server.ssrLoadModule('/scripts/check-undercoat.ts')
 } finally {
   await server.close()
 }

@@ -1,6 +1,15 @@
 import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { PaintSurface, type CutoutResult, type ViewState } from '../lib/paintSurface'
-import type { HistoryState, LoadedPhoto, MaskMode, PhotoState, SectionCategory, SectionInfo, Tool } from '../types'
+import type {
+  HighlightPigment,
+  HistoryState,
+  LoadedPhoto,
+  MaskMode,
+  PhotoState,
+  SectionCategory,
+  SectionInfo,
+  Tool,
+} from '../types'
 
 export type StageHandle = {
   undo: () => void
@@ -22,9 +31,14 @@ export type StageHandle = {
   proposeSections: () => number
   clearRidges: () => void
   fillSection: () => void
+  autoHighlight: (pigment: HighlightPigment) => 'ok' | 'empty' | 'blocked' | 'none'
+  sampleActivePigment: () => string | null
+  atFrame: () => boolean
 }
 
 type CanvasStageProps = {
+  slotId: string
+  slotLabel: string
   image: LoadedPhoto | null
   tool: Tool
   color: string
@@ -36,6 +50,10 @@ type CanvasStageProps = {
   edgeSnap: boolean
   snapStrength: number
   maskMode: MaskMode
+  paintLook: number
+  undercoat: number
+  viewBackdrop: string | null
+  backdropImage: string | null
   sectionChip: { name: string; color: string } | null
   onPickColor: (hex: string, commit: boolean) => void
   onStroke: (hex: string) => void
@@ -43,12 +61,14 @@ type CanvasStageProps = {
   onPhoto: (photo: PhotoState) => void
   onSections: (sections: SectionInfo[], activeId: string | null) => void
   onError: (message: string) => void
-  onBrowse: () => void
   onRidges: (active: boolean) => void
+  onZoomGesture?: (direction: 'in' | 'out') => boolean
 }
 
 export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function CanvasStage(
   {
+    slotId,
+    slotLabel,
     image,
     tool,
     color,
@@ -60,6 +80,10 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     edgeSnap,
     snapStrength,
     maskMode,
+    paintLook,
+    undercoat,
+    viewBackdrop,
+    backdropImage,
     sectionChip,
     onPickColor,
     onStroke,
@@ -67,8 +91,8 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     onPhoto,
     onSections,
     onError,
-    onBrowse,
     onRidges,
+    onZoomGesture,
   },
   ref,
 ) {
@@ -88,6 +112,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
   const onSectionsRef = useRef(onSections)
   const onErrorRef = useRef(onError)
   const onRidgesRef = useRef(onRidges)
+  const onZoomGestureRef = useRef(onZoomGesture)
   onPickRef.current = onPickColor
   onStrokeRef.current = onStroke
   onHistoryRef.current = onHistory
@@ -95,6 +120,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
   onSectionsRef.current = onSections
   onErrorRef.current = onError
   onRidgesRef.current = onRidges
+  onZoomGestureRef.current = onZoomGesture
 
   const configRef = useRef({
     tool,
@@ -107,6 +133,8 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     edgeSnap,
     snapStrength,
     maskMode,
+    paintLook,
+    undercoat,
   })
   configRef.current = {
     tool,
@@ -119,6 +147,8 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     edgeSnap,
     snapStrength,
     maskMode,
+    paintLook,
+    undercoat,
   }
 
   useLayoutEffect(() => {
@@ -137,6 +167,7 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       sections: (sections, activeId) => onSectionsRef.current(sections, activeId),
       ridges: (active) => onRidgesRef.current(active),
       error: (message) => onErrorRef.current(message),
+      zoomGesture: (direction) => onZoomGestureRef.current?.(direction) ?? false,
     })
     surfaceRef.current = surface
     surface.configure(configRef.current)
@@ -174,6 +205,9 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
     proposeSections: () => surfaceRef.current?.proposeSections() ?? 0,
     clearRidges: () => surfaceRef.current?.clearRidges(),
     fillSection: () => surfaceRef.current?.fillSection(),
+    autoHighlight: (pigment: HighlightPigment) => surfaceRef.current?.autoHighlight(pigment) ?? 'none',
+    sampleActivePigment: () => surfaceRef.current?.sampleActivePigment() ?? null,
+    atFrame: () => surfaceRef.current?.atFrame() ?? true,
   }))
 
   const zoomLabel = `${Math.round(view.z * 100)}%`
@@ -183,10 +217,24 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       ref={viewportRef}
       className="viewport"
       data-tool={tool}
+      data-view={slotId}
       data-space={spaceHeld ? 'true' : 'false'}
       role="application"
-      aria-label="Miniature photo. Paint tints the picture and keeps its light and shadow."
-      style={{ '--brush': `${brushSize * view.contentScale * view.z}px` } as CSSProperties}
+      aria-label={`${slotLabel}. Paint tints the picture and keeps its light and shadow.`}
+      style={
+        {
+          '--brush': `${brushSize * view.contentScale * view.z}px`,
+          ...(viewBackdrop || backdropImage
+            ? {
+                backgroundColor: viewBackdrop ?? '#111111',
+                backgroundImage: backdropImage ? `url("${backdropImage}")` : 'none',
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
+                backgroundRepeat: 'no-repeat',
+              }
+            : null),
+        } as CSSProperties
+      }
     >
       <div
         className="stage"
@@ -210,11 +258,8 @@ export const CanvasStage = forwardRef<StageHandle, CanvasStageProps>(function Ca
       {!image && (
         <div className="empty">
           <MiniSilhouette />
-          <h2>Drop a miniature photo</h2>
-          <p>Tint the photo like paint on a miniature. Edges, highlights, and shadows stay visible.</p>
-          <button type="button" className="btn btn-primary" onClick={onBrowse}>
-            Upload photo
-          </button>
+          <h2>{slotLabel}</h2>
+          <p>This view is empty.</p>
         </div>
       )}
 

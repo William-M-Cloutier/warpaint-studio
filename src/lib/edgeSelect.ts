@@ -214,11 +214,40 @@ export function selectionEdges(
   tolerance: number,
   edits?: RidgeEdits | null,
 ): Uint8Array {
-  if (width < 2 || height < 2) return new Uint8Array(Math.max(0, width * height))
-  const map = buildEdgeMap(rgba, width, height)
   // Yellow overlay is automatic Canny after erases. A painted ridge is not run
   // through Canny again — the stroke pixels themselves are the wall.
-  const walls = wallsFor(map, tolerance, edits, false)
+  return upsampleWalls(rgba, width, height, tolerance, edits, false).walls
+}
+
+/**
+ * Full-resolution ridges for a one-click highlight.
+ * Hand-added ridges are included. `off` is 1 where the pixel is not the miniature.
+ * Do not mutate `off`; it is the map's own buffer.
+ */
+export function miniatureRidges(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  tolerance: number,
+  edits?: RidgeEdits | null,
+): { walls: Uint8Array; off: Uint8Array } {
+  return upsampleWalls(rgba, width, height, tolerance, edits, true)
+}
+
+function upsampleWalls(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  tolerance: number,
+  edits: RidgeEdits | null | undefined,
+  includeAdds: boolean,
+): { walls: Uint8Array; off: Uint8Array } {
+  if (width < 2 || height < 2) {
+    const count = Math.max(0, width * height)
+    return { walls: new Uint8Array(count), off: new Uint8Array(count) }
+  }
+  const map = buildEdgeMap(rgba, width, height)
+  const walls = wallsFor(map, tolerance, edits, includeAdds)
   const full = new Uint8Array(width * height)
   const { scale } = map
   for (let y = 0; y < height; y += 1) {
@@ -230,7 +259,7 @@ export function selectionEdges(
       if (walls[cy * map.width + cx] !== 0) full[pixel] = 255
     }
   }
-  return full
+  return { walls: full, off: map.off }
 }
 
 /**

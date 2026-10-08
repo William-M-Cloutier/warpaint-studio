@@ -1,9 +1,10 @@
+import { buildHighlightCoverage } from './autoHighlight'
 import { canvasToBitmap } from './canvasPoint'
-import { highlightColor } from './color'
+import { highlightColor, rgbToHex } from './color'
 import { extendStroke, type LineLock } from './constrain'
 import { clampCutoutStrength, projectCutout, removeBackdrop, repairCutout } from './cutout'
 import { RidgeLayer, ridgeAlpha, type RidgeStroke } from './edgeEdits'
-import { edgeGuide, selectionEdges } from './edgeSelect'
+import { edgeGuide, miniatureRidges, selectionEdges } from './edgeSelect'
 import {
   DEFAULT_SNAP_STRENGTH,
   biasStrokePoint,
@@ -14,11 +15,12 @@ import {
 } from './edgeSnap'
 import { clampPhotoScale, fitPhotoScale } from './photoScale'
 import { MAX_SECTION_HISTORY, SectionLayer } from './sectionLayer'
-import { compositeSurface, sampleTintHex } from './tint'
+import { PAINT_LOOK_DEFAULT, compositeSurface, paintLookBlend, sampleTintHex } from './tint'
 import {
   MAX_HISTORY,
   clampBounds,
   historyHasPaint,
+  paintEdgeHighlight,
   paintSectionFill,
   paintStroke,
   projectActions,
@@ -29,7 +31,7 @@ import {
   type Point,
   type Stroke,
 } from './paint'
-import type { HistoryState, LoadedPhoto, MaskMode, PhotoState, SectionInfo, Tool } from '../types'
+import type { HighlightPigment, HistoryState, LoadedPhoto, MaskMode, PhotoState, SectionInfo, Tool } from '../types'
 
 export type ViewState = {
   x: number
@@ -54,6 +56,9 @@ export type SurfaceConfig = {
   showEdges: boolean
   edgeSnap: boolean
   snapStrength: number
+  paintLook: number
+  /** 0 is a clean coat. Above 0, existing pigment shadows the next brush, fill, or highlight. */
+  undercoat: number
 }
 
 type SurfaceEvents = {
@@ -65,6 +70,8 @@ type SurfaceEvents = {
   error: (message: string) => void
   sections: (sections: SectionInfo[], activeId: string | null) => void
   ridges: (active: boolean) => void
+  /** Return true to keep this wheel gesture from changing the photo zoom. */
+  zoomGesture?: (direction: 'in' | 'out') => boolean
 }
 
 type Hist = {
@@ -211,8 +218,6 @@ function context2d(
  * the view and do not resample the photo. Backdrop removal keeps the original on
  * `source` and writes transparency into the sample the tint is shaded with.
  *
- * TODO(view-backgrounds): no replacement backdrop. The viewport checkerboard shows through a cutout.
- * TODO(multi-angle): one photo fills the stage. A 2×2 layout is later.
  * TODO(lighting): no lighting presets on the preview.
  */
 export class PaintSurface {
@@ -231,6 +236,8 @@ export class PaintSurface {
   private ring: HTMLElement | null = null
   private pan = { x: 0, y: 0 }
   private zoom = 1
+  /** Zoom that frames the photo in the current cell. Wheel-out at this level can return to the grid. */
+  private framedZoom = 1
   private contentScale = 1
   private cutoutActive = false
   private readonly maskBase = document.createElement('canvas')
@@ -252,6 +259,8 @@ export class PaintSurface {
   private showEdges = false
   private edgeSnap = false
   private snapStrength = DEFAULT_SNAP_STRENGTH
+  private paintLook = PAINT_LOOK_DEFAULT
+  private undercoat = 0
   private edgeMask: Uint8Array | null = null
   private maskMode: MaskMode = 'new'
   private readonly sections = new SectionLayer()
@@ -317,7 +326,12 @@ export class PaintSurface {
     this.showEdges = config.showEdges
     this.edgeSnap = config.edgeSnap
     this.snapStrength = config.snapStrength
+    const look = Math.min(1, Math.max(0, config.paintLook))
+    const lookChanged = Math.abs(look - this.paintLook) > 0.0001
+    this.paintLook = look
+    this.undercoat = Math.min(1, Math.max(0, config.undercoat))
     this.maskMode = config.maskMode
+    if (lookChanged && this.image) this.present(null)
     if (this.ring && !showsBrushRing(config.tool, config.space)) {
       this.ring.style.visibility = 'hidden'
     }
@@ -414,6 +428,7 @@ export class PaintSurface {
     if (!Number.isFinite(zoom)) zoom = 1
     if (Math.abs(zoom - 1) < 0.015) zoom = 1
     this.zoom = zoom
+    this.framedZoom = zoom
     this.center(displayW, displayH)
     this.emitView()
     this.emitPhoto()
@@ -439,8 +454,14 @@ export class PaintSurface {
     const zoom = this.frameZoom(displayW, displayH)
     if (!Number.isFinite(zoom)) return
     this.zoom = zoom
+    this.framedZoom = zoom
     this.center(displayW, displayH)
     this.emitView()
+  }
+
+  /** True when view zoom is still the framed fit, so zooming out can return to the grid. */
+  atFrame(): boolean {
+    return this.zoom <= this.framedZoom * 1.04
   }
 
   /** Resize the picture. View zoom stays, anchored at the center of the canvas. */
@@ -693,12 +714,90 @@ export class PaintSurface {
       this.emit.error('That section is empty.')
       return
     }
-    const fill = { color: this.color, opacity: this.opacity, clip }
+    const fill = { color: this.color, opacity: this.opacity, clip, undercoat: this.undercoat }
     paintSectionFill(this.tintCtx, fill)
     this.present(null)
     this.push({ kind: 'fill', fill })
     this.emit.stroke(this.color)
     this.emitHistory()
+  }
+
+  /**
+   * Paint the highlight colour along raised edges.
+   * The active section limits it. With no section, the whole miniature is used.
+   * Stay inside lines narrows the band. One history step, so undo removes it.
+   */
+  autoHighlight(pigment: HighlightPigment): 'ok' | 'empty' | 'blocked' | 'none' {
+    if (!this.image || !this.tintCtx || !this.hist || !this.sampleCtx || this.disposed) return 'none'
+    const clipTarget = this.sections.clipForPaint(this.cutoutActive ? this.cutoutAlpha : null)
+    if (clipTarget.blocked) {
+      this.emit.error(clipTarget.blocked)
+      return 'blocked'
+    }
+    const pixels = this.readSample()
+    if (!pixels) return 'none'
+    const width = this.sample.width
+    const height = this.sample.height
+    let ridges: { walls: Uint8Array; off: Uint8Array }
+    try {
+      ridges = miniatureRidges(pixels.data, width, height, this.tolerance, this.ridgeEdits())
+    } catch {
+      this.emit.error('Could not read the ridges for a highlight.')
+      return 'none'
+    }
+    const built = buildHighlightCoverage({
+      rgba: pixels.data,
+      width,
+      height,
+      walls: ridges.walls,
+      off: ridges.off,
+      section: clipTarget.clip?.mask ?? null,
+      cutout: this.cutoutActive ? this.cutoutAlpha : null,
+      hug: this.edgeSnap,
+      hugStrength: this.snapStrength,
+    })
+    if (built.count < 8) return 'empty'
+    const highlight = {
+      color: pigment === 'current' ? this.color : highlightColor(this.color),
+      opacity: this.opacity,
+      coverage: built.coverage,
+      width,
+      height,
+      undercoat: this.undercoat,
+    }
+    paintEdgeHighlight(this.tintCtx, highlight)
+    this.present(null)
+    this.push({ kind: 'highlight', highlight })
+    this.emit.stroke(highlight.color)
+    this.emitHistory()
+    return 'ok'
+  }
+
+  /** Average pigment already painted inside the active section. */
+  sampleActivePigment(): string | null {
+    if (!this.tintCtx || !this.image || this.disposed) return null
+    const mask = this.sections.activeMask()
+    if (!mask || mask.length !== this.tint.width * this.tint.height) return null
+    let red = 0
+    let green = 0
+    let blue = 0
+    let samples = 0
+    try {
+      const data = this.tintCtx.getImageData(0, 0, this.tint.width, this.tint.height).data
+      for (let i = 0; i < mask.length; i += 1) {
+        if (mask[i] === 0) continue
+        const offset = i * 4
+        if (data[offset + 3] < 16) continue
+        red += data[offset]
+        green += data[offset + 1]
+        blue += data[offset + 2]
+        samples += 1
+      }
+    } catch {
+      return null
+    }
+    if (samples < 8) return null
+    return rgbToHex(red / samples, green / samples, blue / samples)
   }
 
   clearRidges(): void {
@@ -822,6 +921,7 @@ export class PaintSurface {
     let delta = event.deltaY
     if (event.deltaMode === 1) delta *= 16
     if (event.deltaMode === 2) delta *= this.viewport.clientHeight
+    if (delta !== 0 && this.emit.zoomGesture?.(delta < 0 ? 'in' : 'out')) return
     const next = clamp(this.zoom * Math.exp(-delta * 0.0015), MIN_ZOOM, MAX_ZOOM)
     const imageX = (mouseX - this.pan.x) / this.zoom
     const imageY = (mouseY - this.pan.y) / this.zoom
@@ -901,6 +1001,7 @@ export class PaintSurface {
       opacity: this.opacity,
       points: [start],
       clip: clipTarget.clip ?? undefined,
+      undercoat: this.tool === 'eraser' ? 0 : this.undercoat,
     }
     this.snapshotBackup()
     this.session = {
@@ -1616,7 +1717,7 @@ export class PaintSurface {
     try {
       const tint = tintCtx.getImageData(region.x, region.y, region.w, region.h)
       const photo = photoCtx.getImageData(region.x, region.y, region.w, region.h)
-      compositeSurface(tint.data, photo.data, tint.data)
+      compositeSurface(tint.data, photo.data, tint.data, paintLookBlend(this.paintLook), region.x, region.y, region.w)
       display.putImageData(tint, region.x, region.y)
     } catch {
       this.presentFailed = true
@@ -1633,7 +1734,8 @@ export class PaintSurface {
     if (projected.includeBase && hist.base) ctx.drawImage(hist.base, 0, 0)
     for (const item of projected.items) {
       if (item.kind === 'stroke') paintStroke(ctx, item.stroke)
-      else paintSectionFill(ctx, item.fill)
+      else if (item.kind === 'fill') paintSectionFill(ctx, item.fill)
+      else paintEdgeHighlight(ctx, item.highlight)
     }
     this.present(null)
     this.emitHistory()
@@ -1669,6 +1771,7 @@ export class PaintSurface {
       return
     }
     if (action.kind === 'fill') paintSectionFill(ctx, action.fill)
+    else if (action.kind === 'highlight') paintEdgeHighlight(ctx, action.highlight)
     else paintStroke(ctx, action.stroke)
     hist.baseHasPixels = true
   }

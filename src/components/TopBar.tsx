@@ -4,6 +4,7 @@ import type { LoadedPhoto, ThemeName } from '../types'
 type TopBarProps = {
   theme: ThemeName
   image: LoadedPhoto | null
+  viewLabel: string
   canClear: boolean
   cutoutActive: boolean
   onUpload: () => void
@@ -16,6 +17,7 @@ type TopBarProps = {
 export function TopBar({
   theme,
   image,
+  viewLabel,
   canClear,
   cutoutActive,
   onUpload,
@@ -34,7 +36,7 @@ export function TopBar({
         </h1>
       </div>
       <div className="topbar-actions">
-        <button type="button" className="btn btn-primary" onClick={onUpload}>
+        <button type="button" className="btn btn-primary" title={`Upload into ${viewLabel}`} onClick={onUpload}>
           Upload
         </button>
         <button type="button" className="btn" onClick={onSave}>
@@ -55,8 +57,8 @@ export function TopBar({
       </div>
       <p className="file-meta" title={image?.name}>
         {image
-          ? `${image.name} · ${image.width}×${image.height}${cutoutActive ? ' · cutout' : ''}`
-          : 'No photo loaded'}
+          ? `${viewLabel} · ${image.name} · ${image.width}×${image.height}${cutoutActive ? ' · cutout' : ''}`
+          : `${viewLabel} · no photo`}
       </p>
       <button
         type="button"

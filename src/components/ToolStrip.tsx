@@ -1,3 +1,4 @@
+import { BACKDROP_PRESETS } from '../lib/backdrop'
 import { photoScaleToSlider, sliderToPhotoScale } from '../lib/photoScale'
 import { EdgeSnapControls } from './EdgeSnapControls'
 import {
@@ -10,7 +11,7 @@ import {
   IconRedo,
   IconUndo,
 } from './Icons'
-import type { Tool } from '../types'
+import type { BackdropChoice, HighlightPigment, Tool } from '../types'
 
 type ToolStripProps = {
   tool: Tool
@@ -41,6 +42,20 @@ type ToolStripProps = {
   onSnapStrength: (strength: number) => void
   showEdgeSnap: boolean
   onFill: () => void
+  highlightPigment: HighlightPigment
+  highlightSwatch: string
+  highlightBusy: boolean
+  onHighlightPigment: (pigment: HighlightPigment) => void
+  onAutoHighlight: () => void
+  paintLook: number
+  onPaintLook: (paintLook: number) => void
+  backdrop: BackdropChoice
+  backdropColor: string
+  backdropImageName: string | null
+  onBackdrop: (choice: BackdropChoice) => void
+  onBackdropColor: (hex: string) => void
+  onBackdropFile: (file: File) => void
+  onClearBackdropImage: () => void
 }
 
 const TOOLS: { id: Tool; label: string; shortcut: string; icon: typeof IconBrush }[] = [
@@ -80,6 +95,20 @@ export function ToolStrip({
   onSnapStrength,
   showEdgeSnap,
   onFill,
+  highlightPigment,
+  highlightSwatch,
+  highlightBusy,
+  onHighlightPigment,
+  onAutoHighlight,
+  paintLook,
+  onPaintLook,
+  backdrop,
+  backdropColor,
+  backdropImageName,
+  onBackdrop,
+  onBackdropColor,
+  onBackdropFile,
+  onClearBackdropImage,
 }: ToolStripProps) {
   return (
     <aside className="toolstrip" aria-label="Tools">
@@ -112,6 +141,46 @@ export function ToolStrip({
           <IconFill />
         </button>
       </div>
+      <section className="assist-block" aria-label="Auto highlight">
+        <button
+          type="button"
+          className="btn btn-block"
+          onClick={onAutoHighlight}
+          disabled={!hasImage || highlightBusy}
+          title="Paint raised edges with the highlight colour. Undo removes it."
+        >
+          {highlightBusy ? 'Working…' : 'Auto highlight'}
+        </button>
+        <div className="tool-actions" role="radiogroup" aria-label="Highlight colour">
+          <button
+            type="button"
+            className="btn"
+            role="radio"
+            aria-checked={highlightPigment === 'lighter'}
+            aria-pressed={highlightPigment === 'lighter'}
+            onClick={() => onHighlightPigment('lighter')}
+          >
+            Lighter
+          </button>
+          <button
+            type="button"
+            className="btn"
+            role="radio"
+            aria-checked={highlightPigment === 'current'}
+            aria-pressed={highlightPigment === 'current'}
+            onClick={() => onHighlightPigment('current')}
+          >
+            Current
+          </button>
+        </div>
+        <p className="tool-note highlight-note">
+          <i className="suggestion-base" style={{ background: highlightSwatch }} aria-hidden="true" />
+          {highlightPigment === 'lighter'
+            ? 'Lighter mix of the current colour, same as the Highlight brush.'
+            : 'The current colour, shaded by the photo like the Highlight brush.'}{' '}
+          Active section, or the whole miniature. Stay inside lines tightens the band.
+        </p>
+      </section>
       <label className="tool-slider">
         <span>Size</span>
         <input
@@ -138,6 +207,27 @@ export function ToolStrip({
         />
         <span className="slider-value">{Math.round(opacity * 100)}%</span>
       </label>
+      <label className="tool-slider">
+        <span>Look</span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={Math.round(paintLook * 100)}
+          aria-label="Paint look, from more photo to more paint"
+          aria-valuetext={paintLook <= 0.02 ? 'More photo' : paintLook >= 0.98 ? 'More paint' : `${Math.round(paintLook * 100)} percent paint`}
+          onChange={(event) => onPaintLook(Number(event.target.value) / 100)}
+        />
+        <span className="slider-value">{Math.round(paintLook * 100)}</span>
+      </label>
+      <p className="look-ends" aria-hidden="true">
+        <span>More photo</span>
+        <span>More paint</span>
+      </p>
+      <p className="tool-note">
+        More photo keeps the picture’s light. More paint strengthens the colour a little and softens that light. The far end is a light coat. The coat underneath does not change.
+      </p>
       {showEdgeSnap && (
         <EdgeSnapControls
           edgeSnap={edgeSnap}
@@ -266,6 +356,59 @@ export function ToolStrip({
         <button type="button" className="btn btn-block" onClick={onResetCutout} disabled={!cutoutActive || cutoutBusy}>
           Reset cutout
         </button>
+        <h2>Viewing background</h2>
+        <p className="tool-note">
+          {cutoutActive
+            ? 'Shows through the cutout. It is not painted onto the miniature.'
+            : 'Choose it now. It shows through once the backdrop is removed.'}
+        </p>
+        <div className="backdrop-presets" role="radiogroup" aria-label="Viewing background">
+          {BACKDROP_PRESETS.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              className="btn catalog-chip backdrop-chip"
+              role="radio"
+              aria-checked={backdrop === entry.id && !backdropImageName}
+              disabled={!hasImage}
+              onClick={() => onBackdrop(entry.id)}
+            >
+              {entry.color && <i style={{ background: entry.color }} aria-hidden="true" />}
+              {entry.label}
+            </button>
+          ))}
+        </div>
+        <label className="tool-slider">
+          <span>Custom colour</span>
+          <input
+            className="backdrop-color"
+            type="color"
+            value={backdropColor}
+            aria-label="Custom viewing colour"
+            disabled={!hasImage}
+            onChange={(event) => onBackdropColor(event.target.value)}
+          />
+        </label>
+        <div className="tool-actions">
+          <label className={hasImage ? 'btn backdrop-file' : 'btn backdrop-file is-disabled'}>
+            Image
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
+              aria-label="Load a viewing background image"
+              disabled={!hasImage}
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                event.target.value = ''
+                if (file) onBackdropFile(file)
+              }}
+            />
+          </label>
+          <button type="button" className="btn" onClick={onClearBackdropImage} disabled={!backdropImageName}>
+            Clear
+          </button>
+        </div>
+        {backdropImageName && <p className="tool-note">Image: {backdropImageName}. It lasts for this session.</p>}
       </section>
     </aside>
   )

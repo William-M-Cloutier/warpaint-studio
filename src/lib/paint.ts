@@ -1,3 +1,4 @@
+import { shadeStampWithUndercoat } from './undercoat'
 import { combineClipAlpha } from './sections'
 
 export type Point = {
@@ -28,6 +29,11 @@ export type Stroke = {
   points: Point[]
   /** Set when an active section limited this stroke. */
   clip?: StrokeClip
+  /**
+   * 0–1. The pigment already under the brush shadows this coat.
+   * Omitted or 0 is a clean coat. Captured when the stroke starts.
+   */
+  undercoat?: number
 }
 
 /** One coat of the current pigment inside a section mask. Shading happens at present time. */
@@ -35,14 +41,31 @@ export type SectionFill = {
   color: string
   opacity: number
   clip: StrokeClip
+  /** 0–1. Existing pigment in the section shadows this fill. Omitted or 0 is a clean coat. */
+  undercoat?: number
+}
+
+/** Highlight pigment along raised edges. Coverage is 0–255 per photo pixel. */
+export type EdgeHighlight = {
+  color: string
+  opacity: number
+  coverage: Uint8Array
+  width: number
+  height: number
+  /** 0–1. Existing pigment under each ridge pixel shadows this highlight. Omitted or 0 is a clean coat. */
+  undercoat?: number
 }
 
 export type HistoryAction =
   | { kind: 'stroke'; stroke: Stroke }
   | { kind: 'fill'; fill: SectionFill }
+  | { kind: 'highlight'; highlight: EdgeHighlight }
   | { kind: 'clear' }
 
-export type ReplayItem = { kind: 'stroke'; stroke: Stroke } | { kind: 'fill'; fill: SectionFill }
+export type ReplayItem =
+  | { kind: 'stroke'; stroke: Stroke }
+  | { kind: 'fill'; fill: SectionFill }
+  | { kind: 'highlight'; highlight: EdgeHighlight }
 
 export type Bounds = {
   x: number
@@ -64,7 +87,8 @@ export function projectActions(actions: readonly HistoryAction[]): {
       includeBase = false
       items.length = 0
     } else if (action.kind === 'stroke') items.push({ kind: 'stroke', stroke: action.stroke })
-    else items.push({ kind: 'fill', fill: action.fill })
+    else if (action.kind === 'fill') items.push({ kind: 'fill', fill: action.fill })
+    else items.push({ kind: 'highlight', highlight: action.highlight })
   }
   return { includeBase, items }
 }
@@ -143,6 +167,10 @@ function traceSmooth(ctx: CanvasRenderingContext2D, points: readonly Point[]): v
 
 /** Draw one finished stroke. A full path (not overlapping dabs) keeps opacity even. */
 export function paintStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void {
+  if ((stroke.undercoat ?? 0) > 0 && stroke.tool !== 'eraser') {
+    paintUndercoatedStroke(ctx, stroke)
+    return
+  }
   if (stroke.clip) {
     paintClippedStroke(ctx, stroke)
     return
@@ -202,11 +230,45 @@ function paintClippedStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void
   const image = stamp.getImageData(0, 0, region.w, region.h)
   combineClipAlpha(image.data, region.w, region.x, region.y, clip.width, clip.height, clip.mask, clip.cutout)
   stamp.putImageData(image, 0, 0)
-  ctx.save()
-  ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over'
-  ctx.imageSmoothingEnabled = false
-  ctx.drawImage(stamp.canvas, 0, 0, region.w, region.h, region.x, region.y, region.w, region.h)
-  ctx.restore()
+  blitStamp(ctx, stamp, region.x, region.y, region.w, region.h, stroke.tool === 'eraser' ? 'destination-out' : 'source-over', 0)
+}
+
+/**
+ * Stamp the coat, then let the pigment already on those pixels shadow it.
+ * Replay reads the canvas as earlier strokes left it, so undo matches the live coat.
+ */
+function paintUndercoatedStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): void {
+  if (stroke.points.length === 0 || stroke.size <= 0 || stroke.opacity <= 0) return
+  const width = ctx.canvas.width
+  const height = ctx.canvas.height
+  const bounds = strokeBounds(stroke)
+  if (!bounds) return
+  const region = clampBounds(bounds, width, height)
+  if (region.w < 1 || region.h < 1) return
+  const stamp = stampContext(region.w, region.h)
+  if (!stamp) return
+  stamp.setTransform(1, 0, 0, 1, 0, 0)
+  stamp.clearRect(0, 0, region.w, region.h)
+  stamp.save()
+  stamp.translate(-region.x, -region.y)
+  const flat: Stroke = stroke.clip ? { ...stroke, clip: undefined, tool: 'brush' } : { ...stroke, tool: 'brush' }
+  paintUnclippedStroke(stamp, flat)
+  stamp.restore()
+  if (stroke.clip) {
+    const image = stamp.getImageData(0, 0, region.w, region.h)
+    combineClipAlpha(
+      image.data,
+      region.w,
+      region.x,
+      region.y,
+      stroke.clip.width,
+      stroke.clip.height,
+      stroke.clip.mask,
+      stroke.clip.cutout,
+    )
+    stamp.putImageData(image, 0, 0)
+  }
+  blitStamp(ctx, stamp, region.x, region.y, region.w, region.h, 'source-over', stroke.undercoat ?? 0)
 }
 
 /** Write the pigment into the tint layer inside the section. Photo luminance shades it on present. */
@@ -228,10 +290,51 @@ export function paintSectionFill(ctx: CanvasRenderingContext2D, fill: SectionFil
     data[i * 4 + 3] = sectionFillAlpha(clip.mask[i], cutout ? cutout[i] : null, opacity)
   }
   stamp.putImageData(image, 0, 0)
+  blitStamp(ctx, stamp, 0, 0, clip.width, clip.height, 'source-over', fill.undercoat ?? 0)
+}
+
+/** Lay highlight pigment where the ridge coverage is non-zero. Photo luminance shades it on present. */
+export function paintEdgeHighlight(ctx: CanvasRenderingContext2D, highlight: EdgeHighlight): void {
+  const { coverage, color, opacity, width, height } = highlight
+  if (width < 1 || height < 1 || coverage.length !== width * height || !(opacity > 0)) return
+  const stamp = stampContext(width, height)
+  if (!stamp) return
+  stamp.setTransform(1, 0, 0, 1, 0, 0)
+  stamp.globalAlpha = 1
+  stamp.globalCompositeOperation = 'source-over'
+  stamp.clearRect(0, 0, width, height)
+  stamp.fillStyle = color
+  stamp.fillRect(0, 0, width, height)
+  const image = stamp.getImageData(0, 0, width, height)
+  const data = image.data
+  for (let i = 0; i < coverage.length; i += 1) {
+    const alpha = coverage[i] * opacity
+    data[i * 4 + 3] = alpha > 0 ? Math.min(255, Math.round(alpha)) : 0
+  }
+  stamp.putImageData(image, 0, 0)
+  blitStamp(ctx, stamp, 0, 0, width, height, 'source-over', highlight.undercoat ?? 0)
+}
+
+function blitStamp(
+  ctx: CanvasRenderingContext2D,
+  stamp: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  composite: GlobalCompositeOperation,
+  undercoat: number,
+): void {
+  if (undercoat > 0 && composite === 'source-over') {
+    const image = stamp.getImageData(0, 0, width, height)
+    const dest = ctx.getImageData(x, y, width, height)
+    shadeStampWithUndercoat(image.data, dest.data, undercoat)
+    stamp.putImageData(image, 0, 0)
+  }
   ctx.save()
-  ctx.globalCompositeOperation = 'source-over'
+  ctx.globalCompositeOperation = composite
   ctx.imageSmoothingEnabled = false
-  ctx.drawImage(stamp.canvas, 0, 0, clip.width, clip.height, 0, 0, clip.width, clip.height)
+  ctx.drawImage(stamp.canvas, 0, 0, width, height, x, y, width, height)
   ctx.restore()
 }
 
