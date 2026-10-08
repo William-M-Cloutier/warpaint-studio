@@ -2,9 +2,9 @@
 
 Preview paint schemes on photos of Warhammer-style miniatures, in the browser. Upload a picture of a painted or unpainted mini and try colours on a layer above it. The photo keeps its light and shadow. This is not a 3D sculpting app, and nothing you paint is uploaded.
 
-![Front, Back, Side L, and Side R. The Stormcast is on Front with a red stroke. The other three views are empty.](docs/screenshots/views.png)
+![Gold shield and trim on a grey Stormcast. The front view is zoomed to fill the canvas, with catalog suggestions open.](docs/screenshots/hero-painted.png)
 
-![Front zoomed to fill the work area, with the same red stroke and an active section.](docs/screenshots/zoom.png)
+*Front view, zoomed. Gold on the shield and trim. Suggestions sit beside the current colour.*
 
 ## Features
 
@@ -21,6 +21,23 @@ Preview paint schemes on photos of Warhammer-style miniatures, in the browser. U
 - **Viewing backgrounds.** Checker, black, grey, white, green, a custom colour, or a picture. It shows through the cutout and is not painted into the mini.
 
 Swatches are approximate screen colours from public charts, not measured chips.
+
+## A closer look
+
+**Four views.** Front, Back, Side L, and Side R. Click a cell to focus it. Zoom fills the work area with that view, and each view keeps its own paint.
+
+![The canvas as a 2×2: Front has the Stormcast, and Back, Side L, and Side R are empty.](docs/screenshots/views-2x2.png)
+
+**Cutout.** The backdrop comes off in the browser. A viewing colour, here green, shows through the transparent pixels and is not painted into the mini.
+
+![The Stormcast cut out and placed on a green viewing background.](docs/screenshots/viewing-background.png)
+
+**Sections and the catalog.**
+
+| Sections | Catalog |
+| --- | --- |
+| ![Sections tab with wand, lasso, mask, edge tolerance, show edges, ridge tools, and suggest regions.](docs/screenshots/sections-panel.png) | ![Catalog tab with base, highlight, and shade suggestions, and the paint list.](docs/screenshots/catalog-panel.png) |
+| Wand, lasso, and mask, plus ridge edits. Suggest regions splits the mini on sculpt edges. | Nearest base, highlight, and shade, then the paint list. |
 
 ## Quick start
 
